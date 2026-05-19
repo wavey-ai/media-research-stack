@@ -1,12 +1,22 @@
 use anyhow::{Context, Result};
+use asr_api::asr::AsrBackend;
 use asr_api::config::{AppConfig, AppRole, AsrModelProvider, LogFormat};
+use asr_api::decoder::DecoderState;
+use asr_api::ingress::{ListenIngress, ListenIngressWebSocketHandler};
+use asr_api::router::AppRouter;
+use asr_api::worker::WorkerState;
 use clap::Parser;
 use std::env;
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
+use upload_response::{ResponseWatcher, UploadResponseRouter, UploadResponseService};
+use web_service::{H2H3Server, Server, ServerBuilder};
+
+const DEFAULT_UPLOAD_RESPONSE_RING_BYTES: usize = 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -29,12 +39,6 @@ struct Config {
 
     #[arg(long, default_value_t = 8443)]
     asr_ingress_port: u16,
-
-    #[arg(long, default_value_t = 9443)]
-    asr_decoder_port: u16,
-
-    #[arg(long, default_value_t = 10443)]
-    asr_worker_port: u16,
 
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     rust_log: String,
@@ -62,10 +66,17 @@ struct Config {
 
     #[arg(
         long,
-        env = "UPLOAD_RESPONSE_SLOTS_PER_STREAM",
-        default_value_t = 1_024
+        env = "UPLOAD_RESPONSE_RING_BYTES",
+        default_value_t = DEFAULT_UPLOAD_RESPONSE_RING_BYTES
     )]
-    upload_response_slots_per_stream: usize,
+    upload_response_ring_bytes: usize,
+
+    #[arg(
+        long,
+        env = "UPLOAD_RESPONSE_SLOTS_PER_STREAM",
+        help = "Explicit slot-count override; otherwise derived from UPLOAD_RESPONSE_RING_BYTES"
+    )]
+    upload_response_slots_per_stream: Option<usize>,
 
     #[arg(long, env = "UPLOAD_RESPONSE_TIMEOUT_MS", default_value_t = 30_000)]
     upload_response_timeout_ms: u64,
@@ -74,56 +85,49 @@ struct Config {
     upload_response_max_inflight: usize,
 }
 
+impl Config {
+    fn upload_response_slot_bytes(&self) -> usize {
+        self.upload_response_slot_size_kb
+            .saturating_mul(1024)
+            .max(1)
+    }
+
+    fn upload_response_slots_per_stream(&self) -> usize {
+        self.upload_response_slots_per_stream
+            .unwrap_or_else(|| {
+                slots_for_ring_bytes(
+                    self.upload_response_ring_bytes,
+                    self.upload_response_slot_bytes(),
+                )
+            })
+            .max(3)
+    }
+
+    fn upload_response_effective_ring_bytes(&self) -> usize {
+        self.upload_response_slots_per_stream()
+            .saturating_mul(self.upload_response_slot_bytes())
+    }
+}
+
+fn slots_for_ring_bytes(ring_bytes: usize, slot_bytes: usize) -> usize {
+    let slot_bytes = slot_bytes.max(1);
+    ring_bytes.max(slot_bytes).saturating_add(slot_bytes - 1) / slot_bytes
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = Config::parse();
     init_tracing(&config.rust_log)?;
     configure_process_env(&config);
 
-    let ingress_url = format!("https://127.0.0.1:{}", config.asr_ingress_port);
     let (tx, mut rx) = mpsc::channel::<ServiceExit>(8);
 
     spawn_service("av-ingest", tx.clone(), av_ingest_proxy::run_from_env());
-    spawn_service(
-        "asr-ingress",
-        tx.clone(),
-        asr_api::run(asr_config(
-            &config,
-            AppRole::Ingress,
-            config.asr_ingress_port,
-            "asr-api-ingress-local",
-            Vec::new(),
-            None,
-        )),
-    );
-    spawn_service(
-        "asr-decoder",
-        tx.clone(),
-        asr_api::run(asr_config(
-            &config,
-            AppRole::Decoder,
-            config.asr_decoder_port,
-            "asr-api-decoder-local",
-            vec![ingress_url.clone()],
-            None,
-        )),
-    );
-    spawn_service(
-        "asr-worker",
-        tx,
-        asr_api::run(asr_config(
-            &config,
-            AppRole::Worker,
-            config.asr_worker_port,
-            "asr-api-worker-local-0",
-            vec![ingress_url.clone()],
-            Some(config.model_dir.clone()),
-        )),
-    );
+    spawn_service("asr-local", tx, run_local_asr(config.clone()));
 
     info!(
         av_ingest = %format!("http://127.0.0.1:{}", config.av_port),
-        asr_listen = %format!("{ingress_url}/v1/listen"),
+        asr_listen = %format!("https://127.0.0.1:{}/v1/listen", config.asr_ingress_port),
         "research stack started"
     );
 
@@ -160,6 +164,95 @@ fn configure_process_env(config: &Config) {
     env::set_var("AV_INGEST_PROXY_LOCAL_HTTP", "1");
     env::set_var("AV_INGEST_PROXY_PORT", config.av_port.to_string());
     env::set_var("AV_INGEST_PROXY_RESOLVE_MODE", &config.av_resolve_mode);
+}
+
+async fn run_local_asr(config: Config) -> Result<()> {
+    let ingress_config = asr_config(
+        &config,
+        AppRole::Ingress,
+        config.asr_ingress_port,
+        "asr-api-ingress-local",
+        Vec::new(),
+        None,
+    );
+    let decoder_config = asr_config(
+        &config,
+        AppRole::Decoder,
+        0,
+        "asr-api-decoder-local",
+        Vec::new(),
+        None,
+    );
+    let worker_config = asr_config(
+        &config,
+        AppRole::Worker,
+        0,
+        "asr-api-worker-local-0",
+        Vec::new(),
+        Some(config.model_dir.clone()),
+    );
+
+    ingress_config.validate()?;
+
+    let upload_service = Arc::new(UploadResponseService::new(
+        ingress_config.upload_response_config(),
+    ));
+    let _watcher_handle = ResponseWatcher::new(upload_service.clone())
+        .with_poll_interval_ms(ingress_config.upload_response_watch_poll_ms)
+        .spawn();
+    let _decoder_handle =
+        Arc::new(DecoderState::new(decoder_config)).spawn_cache_worker(upload_service.clone());
+
+    let backend = Arc::new(AsrBackend::new(
+        worker_config.model_dir()?,
+        worker_config.resolved_model_provider()?,
+        &worker_config.device_ids,
+        worker_config.onnx_sessions,
+        worker_config.cohere_max_new_tokens,
+    )?);
+    let _worker_handle = Arc::new(WorkerState::new(worker_config, backend))
+        .spawn_cache_worker(upload_service.clone());
+
+    let upload_router = Arc::new(UploadResponseRouter::new(upload_service.clone()));
+    let listen_ingress = Arc::new(ListenIngress::new(
+        ingress_config.clone(),
+        upload_service.clone(),
+    ));
+    let listen_ws = Arc::new(ListenIngressWebSocketHandler::new(listen_ingress.clone()));
+    let router = Box::new(AppRouter::new(
+        ingress_config.clone(),
+        Some(upload_router),
+        Some(listen_ingress),
+        Some(listen_ws),
+    ));
+
+    let (cert_b64, key_b64) = ingress_config.tls_base64()?;
+    let server = H2H3Server::builder()
+        .with_tls(cert_b64, key_b64)
+        .with_port(ingress_config.port)
+        .enable_h2(true)
+        .enable_h3(ingress_config.enable_h3)
+        .enable_websocket(true)
+        .with_router(router)
+        .build()
+        .context("failed to build local ASR ingress server")?;
+    let handle = server
+        .start()
+        .await
+        .context("failed to start ASR ingress")?;
+    let _ = handle.ready_rx.await;
+
+    info!(
+        asr_listen = %format!("https://127.0.0.1:{}/v1/listen", ingress_config.port),
+        upload_response_num_streams = ingress_config.upload_response_num_streams,
+        upload_response_slot_size_kb = ingress_config.upload_response_slot_size_kb,
+        upload_response_slots_per_stream = ingress_config.upload_response_slots_per_stream,
+        upload_response_ring_bytes = config.upload_response_effective_ring_bytes(),
+        "local ASR stack ready"
+    );
+
+    let _ = handle.finished_rx.await;
+    anyhow::bail!("ASR ingress server exited")
 }
 
 fn spawn_service<F>(name: &'static str, tx: mpsc::Sender<ServiceExit>, future: F)
@@ -209,7 +302,7 @@ fn asr_config(
         utt_split_seconds: config.utt_split_seconds,
         upload_response_num_streams: config.upload_response_num_streams,
         upload_response_slot_size_kb: config.upload_response_slot_size_kb,
-        upload_response_slots_per_stream: config.upload_response_slots_per_stream,
+        upload_response_slots_per_stream: config.upload_response_slots_per_stream(),
         upload_response_timeout_ms: config.upload_response_timeout_ms,
         upload_response_watch_poll_ms: 1,
         upload_response_worker_poll_ms: 2,

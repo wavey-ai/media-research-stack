@@ -13,3 +13,11 @@ clap = { version = "4.5", features = ["derive", "env"] }
 tokio = { version = "1.45", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+upload-response = { git = "https://github.com/wavey-ai/web-services.git", package = "upload-response" }
+web-service = { git = "https://github.com/wavey-ai/web-services.git", package = "web-service" }
+
+[dev-dependencies]
+bytes = "1"
+futures-util = "0.3"
+http = "1"
+serde_json = "1.0"
