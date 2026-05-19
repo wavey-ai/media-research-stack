@@ -1,0 +1,14 @@
+[package]
+name = "media-research-stack"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+asr-api = { git = "https://github.com/wavey-ai/asr-api.git", default-features = false, features = ["cohere-mlx", "audio-decoder"] }
+av-ingest-proxy = { git = "https://github.com/wavey-ai/av-ingest.git", package = "av-ingest-proxy" }
+clap = { version = "4.5", features = ["derive", "env"] }
+tokio = { version = "1.45", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
