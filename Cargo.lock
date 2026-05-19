@@ -145,7 +145,7 @@ checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 [[package]]
 name = "asr-api"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/asr-api.git#d168c99fb67f8e824a03607b153063316660db6e"
+source = "git+https://github.com/wavey-ai/asr-api.git#1c8f3ac335ad5251bfabde3e60ecba22c9fe4dc0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -267,7 +267,7 @@ dependencies = [
 [[package]]
 name = "av-ingest-proxy"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/av-ingest.git#898e5e88e18e0dcb67ddb9d0e53699791e888a6d"
+source = "git+https://github.com/wavey-ai/av-ingest.git#533c1d25eb9e0efbe03388ff37df75f7c0aa7880"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1923,6 +1923,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "asr-api",
+ "async-trait",
  "av-ingest-proxy",
  "bytes",
  "clap 4.6.1",

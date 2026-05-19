@@ -4,19 +4,20 @@ use asr_api::config::{AppConfig, AppRole, AsrModelProvider, LogFormat};
 use asr_api::decoder::DecoderState;
 use asr_api::ingress::ListenIngress;
 use asr_api::worker::WorkerState;
+use async_trait::async_trait;
 use av_ingest_proxy::{TranscribeAudioResolver, TranscribeAudioStream};
 use bytes::Bytes;
 use futures_util::StreamExt;
-use http::{header::CONTENT_TYPE, Request};
+use http::{header::CONTENT_TYPE, Request, Response, StatusCode};
 use serde_json::{json, Value};
 use std::env;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use upload_response::{ResponseWatcher, UploadResponseService};
-use web_service::{BodyStream, HandlerResponse, ServerError};
+use web_service::{BodyStream, ServerError, StreamWriter};
 
 const DEFAULT_MASTERING_URLS: &[&str] = &[
     "https://www.youtube.com/watch?v=Szv32PCJfs0",
@@ -38,6 +39,7 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
 
     env::set_var("ASR_COHERE_BACKEND", "mlx");
     env::set_var("AV_INGEST_PROXY_RESOLVE_MODE", "transcribe");
+    init_tracing();
     ensure_mlx_metallib_for_current_exe()?;
 
     let model_dir = PathBuf::from(env::var("ASR_MODEL_DIR").context("ASR_MODEL_DIR is required")?);
@@ -50,7 +52,9 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
     tokio::time::sleep(startup_grace).await;
 
     let report_path = report_path()?;
+    let progress_path = progress_path()?;
     eprintln!("writing benchmark report to {}", report_path.display());
+    eprintln!("writing streaming progress to {}", progress_path.display());
 
     let mut completed = 0usize;
     let mut aggregate_audio_seconds = 0.0f64;
@@ -78,7 +82,9 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
             itag,
             content_length
         );
-        let transcript = asr.transcribe(audio).await?;
+        let transcript = asr
+            .transcribe(audio, &progress_path, index, source_url)
+            .await?;
         let wall_seconds = started_at.elapsed().as_secs_f64();
         let rtfx = audio_seconds / wall_seconds.max(0.001);
 
@@ -170,21 +176,35 @@ impl LocalAsrHarness {
         })
     }
 
-    async fn transcribe(&self, audio: TranscribeAudioStream) -> Result<String> {
+    async fn transcribe(
+        &self,
+        audio: TranscribeAudioStream,
+        progress_path: &Path,
+        source_index: usize,
+        source_url: &str,
+    ) -> Result<String> {
         let content_type = header_string(&audio, CONTENT_TYPE.as_str())
             .or_else(|| audio.mime_type.clone())
             .unwrap_or_else(|| "application/octet-stream".to_string());
+        let listen_uri = if env_flag("MEDIA_RESEARCH_STACK_MASTERING_INTERIM") {
+            "/v1/listen?utterances=true&paragraphs=true&timestamps=true&interim_results=true&language=en_US"
+        } else {
+            "/v1/listen?utterances=true&paragraphs=true&timestamps=true&language=en_US"
+        };
         let req = Request::builder()
             .method("POST")
-            .uri("/v1/listen?utterances=true&paragraphs=true&timestamps=true&language=en_US")
+            .uri(listen_uri)
             .header(CONTENT_TYPE, content_type)
             .body(())
             .context("failed to build listen request")?;
-        let response = self
-            .ingress
-            .handle_listen(req, body_stream_from_audio(audio))
-            .await;
-        transcript_from_response(response)
+        let writer =
+            ProgressStreamWriter::new(progress_path, source_index, source_url.to_string())?;
+        let collector = writer.collector();
+        self.ingress
+            .handle_listen_stream(req, body_stream_from_audio(audio), Box::new(writer))
+            .await
+            .map_err(|error| anyhow!("streaming listen failed: {error}"))?;
+        collector.transcript()
     }
 }
 
@@ -202,23 +222,277 @@ fn body_stream_from_audio(audio: TranscribeAudioStream) -> BodyStream {
     }))
 }
 
-fn transcript_from_response(response: HandlerResponse) -> Result<String> {
-    let body = response.body.unwrap_or_else(Bytes::new);
-    if !response.status.is_success() {
+struct ProgressStreamWriter {
+    file: File,
+    pending: Vec<u8>,
+    state: Arc<Mutex<ProgressState>>,
+    source_index: usize,
+    source_url: String,
+    status: Option<StatusCode>,
+}
+
+#[derive(Default)]
+struct ProgressState {
+    status: Option<StatusCode>,
+    events: usize,
+    final_segments: Vec<String>,
+    last_interim: Option<String>,
+    error_body: Vec<u8>,
+}
+
+#[derive(Clone)]
+struct ProgressCollector {
+    state: Arc<Mutex<ProgressState>>,
+}
+
+impl ProgressStreamWriter {
+    fn new(path: &Path, source_index: usize, source_url: String) -> Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .with_context(|| format!("failed to open progress file {}", path.display()))?;
+        Ok(Self {
+            file,
+            pending: Vec::new(),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            source_index,
+            source_url,
+            status: None,
+        })
+    }
+
+    fn collector(&self) -> ProgressCollector {
+        ProgressCollector {
+            state: self.state.clone(),
+        }
+    }
+
+    fn write_progress_value(&mut self, value: &Value) -> Result<(), ServerError> {
+        let line =
+            serde_json::to_string(value).map_err(|error| ServerError::Config(error.to_string()))?;
+        writeln!(self.file, "{line}")?;
+        self.file.flush()?;
+        Ok(())
+    }
+
+    fn process_line(&mut self, line: &[u8]) -> Result<(), ServerError> {
+        let line = trim_ascii(line);
+        if line.is_empty() {
+            return Ok(());
+        }
+
+        let event = serde_json::from_slice::<Value>(line).unwrap_or_else(|error| {
+            json!({
+                "type": "ParseError",
+                "error": error.to_string(),
+                "raw": String::from_utf8_lossy(line),
+            })
+        });
+        let wrapped = json!({
+            "source_index": self.source_index,
+            "source_url": self.source_url,
+            "event": event.clone(),
+        });
+        self.write_progress_value(&wrapped)?;
+
+        if self.status.is_some_and(|status| !status.is_success()) {
+            let mut state = self.lock_state()?;
+            if !state.error_body.is_empty() {
+                state.error_body.push(b'\n');
+            }
+            state.error_body.extend_from_slice(line);
+            return Ok(());
+        }
+
+        self.record_event(&event)
+    }
+
+    fn record_event(&self, event: &Value) -> Result<(), ServerError> {
+        let mut state = self.lock_state()?;
+        state.events += 1;
+
+        match event.get("type").and_then(Value::as_str) {
+            Some("Metadata") => {
+                if let Some(request_id) = event.get("request_id").and_then(Value::as_str) {
+                    eprintln!(
+                        "[{}] ASR metadata request_id={request_id}",
+                        self.source_index + 1
+                    );
+                }
+            }
+            Some("SpeechStarted") => {
+                if let Some(timestamp) = event.get("timestamp").and_then(Value::as_f64) {
+                    eprintln!(
+                        "[{}] speech started at {:.1}s",
+                        self.source_index + 1,
+                        timestamp
+                    );
+                }
+            }
+            Some("Results") => {
+                let transcript = event
+                    .pointer("/channel/alternatives/0/transcript")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or_default();
+                if transcript.is_empty() {
+                    return Ok(());
+                }
+
+                let is_final = event
+                    .get("is_final")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if is_final {
+                    state.final_segments.push(transcript.to_string());
+                } else {
+                    state.last_interim = Some(transcript.to_string());
+                }
+
+                let label = if is_final { "final" } else { "interim" };
+                let start = event.get("start").and_then(Value::as_f64).unwrap_or(0.0);
+                let duration = event
+                    .get("duration")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(start);
+                eprintln!(
+                    "[{}] ASR {label} {:.1}-{:.1}s: {}",
+                    self.source_index + 1,
+                    start,
+                    duration,
+                    transcript_preview(transcript)
+                );
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn drain_complete_lines(&mut self) -> Result<(), ServerError> {
+        while let Some(line_end) = self.pending.iter().position(|byte| *byte == b'\n') {
+            let mut line = self.pending.drain(..=line_end).collect::<Vec<_>>();
+            if line.last() == Some(&b'\n') {
+                line.pop();
+            }
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            self.process_line(&line)?;
+        }
+        Ok(())
+    }
+
+    fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, ProgressState>, ServerError> {
+        self.state
+            .lock()
+            .map_err(|_| ServerError::Config("progress state mutex poisoned".into()))
+    }
+}
+
+#[async_trait]
+impl StreamWriter for ProgressStreamWriter {
+    async fn send_response(&mut self, response: Response<()>) -> Result<(), ServerError> {
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned);
+        self.status = Some(status);
+        self.lock_state()?.status = Some(status);
+        self.write_progress_value(&json!({
+            "source_index": self.source_index,
+            "source_url": self.source_url,
+            "event": {
+                "type": "ResponseHead",
+                "status": status.as_u16(),
+                "content_type": content_type,
+            },
+        }))?;
+        Ok(())
+    }
+
+    async fn send_data(&mut self, data: Bytes) -> Result<(), ServerError> {
+        self.pending.extend_from_slice(&data);
+        self.drain_complete_lines()
+    }
+
+    async fn finish(&mut self) -> Result<(), ServerError> {
+        if !self.pending.is_empty() {
+            let line = std::mem::take(&mut self.pending);
+            self.process_line(&line)?;
+        }
+        self.file.flush()?;
+        Ok(())
+    }
+}
+
+impl ProgressCollector {
+    fn transcript(&self) -> Result<String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("progress state mutex poisoned"))?;
+
+        match state.status {
+            Some(status) if !status.is_success() => {
+                let body = String::from_utf8_lossy(&state.error_body);
+                bail!("ASR failed with HTTP {status}: {body}");
+            }
+            Some(_) => {}
+            None => bail!("ASR stream did not send a response head"),
+        }
+
+        let transcript = state
+            .final_segments
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !transcript.trim().is_empty() {
+            return Ok(transcript);
+        }
+        if let Some(interim) = state
+            .last_interim
+            .as_deref()
+            .filter(|text| !text.is_empty())
+        {
+            return Ok(interim.to_string());
+        }
+
         bail!(
-            "ASR failed with HTTP {}: {}",
-            response.status,
-            String::from_utf8_lossy(&body)
+            "ASR stream did not contain a transcript; received {} events",
+            state.events
         );
     }
-    let value = serde_json::from_slice::<Value>(&body).context("failed to parse ASR JSON")?;
-    value
-        .pointer("/results/channels/0/alternatives/0/transcript")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| anyhow!("ASR response did not contain a transcript"))
+}
+
+fn trim_ascii(line: &[u8]) -> &[u8] {
+    let start = line
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(line.len());
+    let end = line
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map(|index| index + 1)
+        .unwrap_or(start);
+    &line[start..end]
+}
+
+fn transcript_preview(transcript: &str) -> String {
+    const LIMIT: usize = 220;
+    let mut preview = String::new();
+    for (index, ch) in transcript.chars().enumerate() {
+        if index >= LIMIT {
+            preview.push_str("...");
+            return preview;
+        }
+        preview.push(ch);
+    }
+    preview
 }
 
 fn header_string(audio: &TranscribeAudioStream, name: &str) -> Option<String> {
@@ -269,6 +543,17 @@ fn report_path() -> Result<PathBuf> {
     Ok(path)
 }
 
+fn progress_path() -> Result<PathBuf> {
+    let path = env::var("MEDIA_RESEARCH_STACK_MASTERING_PROGRESS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("target/mastering-videos/progress.ndjson"));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let _ = fs::remove_file(&path);
+    Ok(path)
+}
+
 fn append_json_line(path: &Path, value: &Value) -> Result<()> {
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{}", serde_json::to_string(value)?)?;
@@ -279,6 +564,14 @@ fn env_flag(name: &str) -> bool {
     env::var(name)
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
+}
+
+fn init_tracing() {
+    let filter = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .compact()
+        .try_init();
 }
 
 fn env_u64(name: &str, default: u64) -> Result<u64> {

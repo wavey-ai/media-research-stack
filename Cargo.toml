@@ -17,6 +17,7 @@ upload-response = { git = "https://github.com/wavey-ai/web-services.git", packag
 web-service = { git = "https://github.com/wavey-ai/web-services.git", package = "web-service" }
 
 [dev-dependencies]
+async-trait = "0.1"
 bytes = "1"
 futures-util = "0.3"
 http = "1"

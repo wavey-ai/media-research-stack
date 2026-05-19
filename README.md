@@ -10,6 +10,9 @@ The binary starts these services in one Tokio process:
 - an `asr-api` decoder worker attached to the same `upload-response` service
 - one `asr-api` MLX worker attached to the same `upload-response` service
 
+ASR chunking uses the `asr-api` defaults: 30 second windows with 2 seconds of
+overlap.
+
 It defaults `av-ingest` to `AV_INGEST_PROXY_RESOLVE_MODE=transcribe`, so
 `/resolve` returns audio-only formats when possible. If YouTube does not expose
 an audio-only format, it keeps only the smallest muxed audio/video format.
@@ -84,13 +87,27 @@ By default it runs several public audio mastering videos end to end and writes
 audio seconds, wall seconds, RTFx, selected format metadata, and transcript
 size. It does not write transcript text into the report.
 
+Streaming ASR events are written separately to
+`target/mastering-videos/progress.ndjson` and transcript snippets are printed
+while the test runs:
+
+```bash
+tail -f target/mastering-videos/progress.ndjson
+```
+
 Useful overrides:
 
 ```bash
 MEDIA_RESEARCH_STACK_MASTERING_URLS='https://www.youtube.com/watch?v=...,https://www.youtube.com/watch?v=...'
 MEDIA_RESEARCH_STACK_MASTERING_REPORT=target/mastering-videos/my-run.jsonl
+MEDIA_RESEARCH_STACK_MASTERING_PROGRESS=target/mastering-videos/my-run-progress.ndjson
+MEDIA_RESEARCH_STACK_MASTERING_INTERIM=1
 UPLOAD_RESPONSE_RING_BYTES=1073741824
 ```
+
+`MEDIA_RESEARCH_STACK_MASTERING_INTERIM=1` enables partial ASR hypotheses. It
+is useful for inspecting live decoding behavior, but it is not the throughput
+benchmark path because it runs extra inference over partial windows.
 
 `UPLOAD_RESPONSE_RING_BYTES` defaults to 1 GiB per stream. With the default
 32 KiB slot size this derives `UPLOAD_RESPONSE_SLOTS_PER_STREAM=32768`; set
