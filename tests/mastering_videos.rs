@@ -7,6 +7,7 @@ use asr_api::worker::WorkerState;
 use async_trait::async_trait;
 use av_ingest_proxy::{TranscribeAudioResolver, TranscribeAudioStream};
 use bytes::Bytes;
+use futures_util::future;
 use futures_util::StreamExt;
 use http::{header::CONTENT_TYPE, Request, Response, StatusCode};
 use serde_json::{json, Value};
@@ -47,8 +48,30 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
     let startup_grace =
         Duration::from_secs(env_u64("MEDIA_RESEARCH_STACK_STARTUP_GRACE_SECS", 20)?);
 
+    let setup_started_at = Instant::now();
+    eprintln!(
+        "benchmark setup: creating av-ingest resolver for {} source(s)",
+        urls.len()
+    );
     let resolver = TranscribeAudioResolver::from_env()?;
+    eprintln!(
+        "benchmark setup: av-ingest resolver ready in {:.2}s",
+        setup_started_at.elapsed().as_secs_f64()
+    );
+    eprintln!(
+        "benchmark setup: loading ASR stack from {}",
+        model_dir.display()
+    );
+    let asr_started_at = Instant::now();
     let asr = LocalAsrHarness::new(model_dir)?;
+    eprintln!(
+        "benchmark setup: ASR stack ready in {:.2}s",
+        asr_started_at.elapsed().as_secs_f64()
+    );
+    eprintln!(
+        "benchmark setup: startup grace {}s",
+        startup_grace.as_secs()
+    );
     tokio::time::sleep(startup_grace).await;
 
     let report_path = report_path()?;
@@ -62,6 +85,12 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
 
     for (index, source_url) in urls.iter().enumerate() {
         let started_at = Instant::now();
+        eprintln!(
+            "[{}/{}] opening source {}",
+            index + 1,
+            urls.len(),
+            source_url
+        );
         let audio = resolver.open_youtube_audio(source_url).await?;
         let audio_seconds = audio
             .duration_seconds
@@ -82,9 +111,16 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
             itag,
             content_length
         );
+        let transcribe_started_at = Instant::now();
         let transcript = asr
             .transcribe(audio, &progress_path, index, source_url)
             .await?;
+        eprintln!(
+            "[{}/{}] ASR stream returned in {:.2}s",
+            index + 1,
+            urls.len(),
+            transcribe_started_at.elapsed().as_secs_f64()
+        );
         let wall_seconds = started_at.elapsed().as_secs_f64();
         let rtfx = audio_seconds / wall_seconds.max(0.001);
 
@@ -143,13 +179,20 @@ struct LocalAsrHarness {
 
 impl LocalAsrHarness {
     fn new(model_dir: PathBuf) -> Result<Self> {
+        let started_at = Instant::now();
+        eprintln!("ASR harness: building configs");
         let ingress_config = asr_config(AppRole::Ingress, "media-research-ingress", None)?;
         let decoder_config = asr_config(AppRole::Decoder, "media-research-decoder", None)?;
         let worker_config =
             asr_config(AppRole::Worker, "media-research-worker-0", Some(model_dir))?;
 
         ingress_config.validate()?;
+        eprintln!(
+            "ASR harness: configs ready in {:.2}s",
+            started_at.elapsed().as_secs_f64()
+        );
 
+        let service_started_at = Instant::now();
         let service = Arc::new(UploadResponseService::new(
             ingress_config.upload_response_config(),
         ));
@@ -158,6 +201,13 @@ impl LocalAsrHarness {
             .spawn();
         let decoder =
             Arc::new(DecoderState::new(decoder_config)).spawn_cache_worker(service.clone());
+        eprintln!(
+            "ASR harness: upload-response and decoder ready in {:.2}s",
+            service_started_at.elapsed().as_secs_f64()
+        );
+
+        let backend_started_at = Instant::now();
+        eprintln!("ASR harness: constructing ASR backend");
         let backend = Arc::new(AsrBackend::new(
             worker_config.model_dir()?,
             worker_config.resolved_model_provider()?,
@@ -165,9 +215,19 @@ impl LocalAsrHarness {
             worker_config.onnx_sessions,
             worker_config.cohere_max_new_tokens,
         )?);
+        eprintln!(
+            "ASR harness: ASR backend ready in {:.2}s",
+            backend_started_at.elapsed().as_secs_f64()
+        );
+
+        let worker_started_at = Instant::now();
         let worker =
             Arc::new(WorkerState::new(worker_config, backend)).spawn_cache_worker(service.clone());
         let ingress = ListenIngress::new(ingress_config, service.clone());
+        eprintln!(
+            "ASR harness: worker/ingress ready in {:.2}s",
+            worker_started_at.elapsed().as_secs_f64()
+        );
 
         Ok(Self {
             ingress,
@@ -200,8 +260,13 @@ impl LocalAsrHarness {
         let writer =
             ProgressStreamWriter::new(progress_path, source_index, source_url.to_string())?;
         let collector = writer.collector();
+        eprintln!("[{}] ASR stream starting", source_index + 1);
         self.ingress
-            .handle_listen_stream(req, body_stream_from_audio(audio), Box::new(writer))
+            .handle_listen_stream(
+                req,
+                body_stream_from_audio(audio, source_index, source_url),
+                Box::new(writer),
+            )
             .await
             .map_err(|error| anyhow!("streaming listen failed: {error}"))?;
         collector.transcript()
@@ -216,10 +281,48 @@ impl Drop for LocalAsrHarness {
     }
 }
 
-fn body_stream_from_audio(audio: TranscribeAudioStream) -> BodyStream {
-    Box::pin(audio.into_response().bytes_stream().map(|chunk| {
-        chunk.map_err(|error| ServerError::Config(format!("source media stream failed: {error}")))
-    }))
+fn body_stream_from_audio(
+    audio: TranscribeAudioStream,
+    source_index: usize,
+    source_url: &str,
+) -> BodyStream {
+    let content_length = header_u64(&audio, "content-length").unwrap_or(0);
+    let source_url = source_url.to_string();
+    Box::pin(audio.into_response().bytes_stream().scan(
+        (0usize, 1024 * 1024usize),
+        move |(total_bytes, next_log_at), chunk| {
+            let result = match chunk {
+                Ok(bytes) => {
+                    *total_bytes += bytes.len();
+                    while *total_bytes >= *next_log_at {
+                        eprintln!(
+                            "[{}] source body read {} / {} bytes from {}",
+                            source_index + 1,
+                            total_bytes,
+                            content_length,
+                            source_url
+                        );
+                        *next_log_at += 1024 * 1024;
+                    }
+                    Ok(bytes)
+                }
+                Err(error) => {
+                    eprintln!(
+                        "[{}] source body error after {} / {} bytes from {}: {}",
+                        source_index + 1,
+                        total_bytes,
+                        content_length,
+                        source_url,
+                        error
+                    );
+                    Err(ServerError::Config(format!(
+                        "source media stream failed after {total_bytes}/{content_length} bytes: {error}"
+                    )))
+                }
+            };
+            future::ready(Some(result))
+        },
+    ))
 }
 
 struct ProgressStreamWriter {

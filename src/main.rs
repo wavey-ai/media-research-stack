@@ -6,12 +6,15 @@ use asr_api::ingress::{ListenIngress, ListenIngressWebSocketHandler};
 use asr_api::router::AppRouter;
 use asr_api::worker::WorkerState;
 use clap::Parser;
+use serde_json::Value;
+use std::collections::HashMap;
 use std::env;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tokio::time::{interval, Duration};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 use upload_response::{ResponseWatcher, UploadResponseRouter, UploadResponseService};
 use web_service::{H2H3Server, Server, ServerBuilder};
@@ -200,6 +203,10 @@ async fn run_local_asr(config: Config) -> Result<()> {
     let _watcher_handle = ResponseWatcher::new(upload_service.clone())
         .with_poll_interval_ms(ingress_config.upload_response_watch_poll_ms)
         .spawn();
+    let _transcript_handle = spawn_transcript_watcher(
+        upload_service.clone(),
+        ingress_config.upload_response_watch_poll_ms,
+    );
     let _decoder_handle =
         Arc::new(DecoderState::new(decoder_config)).spawn_cache_worker(upload_service.clone());
 
@@ -253,6 +260,131 @@ async fn run_local_asr(config: Config) -> Result<()> {
 
     let _ = handle.finished_rx.await;
     anyhow::bail!("ASR ingress server exited")
+}
+
+fn spawn_transcript_watcher(service: Arc<UploadResponseService>, poll_interval_ms: u64) {
+    tokio::spawn(async move {
+        let mut poll_interval = interval(Duration::from_millis(poll_interval_ms.max(1)));
+        let num_streams = service.config().num_streams;
+
+        let mut stream_ids: Vec<u64> = vec![0; num_streams];
+        let mut last_seen: Vec<usize> = vec![0; num_streams];
+        let mut body_buffers: HashMap<u64, Vec<u8>> = HashMap::new();
+
+        loop {
+            poll_interval.tick().await;
+
+            for stream_idx in 0..num_streams {
+                let stream_id = service.slot_stream_id(stream_idx).unwrap_or(0);
+                let previous_stream_id = stream_ids[stream_idx];
+
+                if stream_id == 0 {
+                    if previous_stream_id != 0 {
+                        body_buffers.remove(&previous_stream_id);
+                        last_seen[stream_idx] = 0;
+                        stream_ids[stream_idx] = 0;
+                    }
+                    continue;
+                }
+
+                if previous_stream_id != stream_id {
+                    if previous_stream_id != 0 {
+                        body_buffers.remove(&previous_stream_id);
+                    }
+                    stream_ids[stream_idx] = stream_id;
+                    last_seen[stream_idx] = 0;
+                }
+
+                let current_last = service.response_last(stream_id).unwrap_or(0);
+                let seen = last_seen[stream_idx];
+                if current_last <= seen {
+                    continue;
+                }
+
+                let body = body_buffers.entry(stream_id).or_default();
+
+                for slot_id in (seen + 1)..=current_last {
+                    if let Some(bytes) = service.response_get(stream_id, slot_id).await {
+                        if slot_id == 1 {
+                            continue;
+                        }
+
+                        if UploadResponseService::is_end_marker(&bytes) {
+                            let transcript = extract_asr_transcript(body);
+                            if let Some(transcript) = transcript {
+                                debug!(
+                                    stream_id,
+                                    stream_idx,
+                                    asr_transcript = %transcript,
+                                    "ASR response completed"
+                                );
+                            }
+                            body_buffers.remove(&stream_id);
+                            break;
+                        }
+
+                        body.extend_from_slice(&bytes);
+                    }
+                }
+
+                last_seen[stream_idx] = current_last;
+            }
+        }
+    });
+}
+
+fn extract_asr_transcript(body: &[u8]) -> Option<String> {
+    let body = String::from_utf8_lossy(body);
+    let mut final_segments: Vec<String> = Vec::new();
+    let mut interim_segments: Vec<String> = Vec::new();
+
+    for raw_line in body.lines() {
+        let raw_line = raw_line.trim();
+        if raw_line.is_empty() {
+            continue;
+        }
+
+        let value: Value = match serde_json::from_str(raw_line) {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(error = %error, "Failed to parse ASR response JSON line for transcript");
+                continue;
+            }
+        };
+
+        let transcript = value
+            .pointer("/channel/alternatives/0/transcript")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                value
+                    .pointer("/results/channels/0/alternatives/0/transcript")
+                    .and_then(Value::as_str)
+            })
+            .map(|transcript| transcript.trim())
+            .unwrap_or("");
+
+        if transcript.is_empty() {
+            continue;
+        }
+
+        let is_final = value
+            .get("is_final")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        if is_final {
+            final_segments.push(transcript.to_string());
+        } else {
+            interim_segments.push(transcript.to_string());
+        }
+    }
+
+    if !final_segments.is_empty() {
+        Some(final_segments.join(" "))
+    } else if !interim_segments.is_empty() {
+        Some(interim_segments.join(" "))
+    } else {
+        None
+    }
 }
 
 fn spawn_service<F>(name: &'static str, tx: mpsc::Sender<ServiceExit>, future: F)
