@@ -8,7 +8,7 @@ It can:
 - resolve public media with `av-ingest`;
 - decode compressed audio with SoundKit as bytes arrive;
 - run Cohere Transcribe through the local MLX runtime on Apple Silicon; and
-- expose a Deepgram-compatible `/v1/listen` endpoint for clients that need the
+- serve a Deepgram-compatible `/v1/listen` endpoint for clients that need the
   same ASR surface.
 
 For channel research, `av-ingest` selects a source audio format, SoundKit
