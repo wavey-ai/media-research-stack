@@ -25,19 +25,41 @@ Install the command-line dependencies:
 brew install libvpx pkg-config yt-dlp jq
 ```
 
-You also need Rust, Swift, and access to Wavey's Cohere Transcribe MLX model
-bundle. Download the bundle from the Wavey Hugging Face model repo you have
-access to, or copy an existing local bundle into:
+Install the Python helpers used for model download/setup when needed:
+
+```bash
+python3 -m pip install -U huggingface_hub sentencepiece
+```
+
+You also need Rust, Swift, and the Cohere Transcribe MLX model bundle. Use a
+Hugging Face login that has access to Cohere's gated model, then download and
+prepare the bundle in the sibling `asr-api` checkout:
+
+```bash
+huggingface-cli login
+
+huggingface-cli download CohereLabs/cohere-transcribe-03-2026 \
+  --local-dir ../asr-api/models/cohere-transcribe-03-2026
+
+python3 ../asr-api/scripts/cohere-extract-vocab.py \
+  --model-dir ../asr-api/models/cohere-transcribe-03-2026
+```
+
+The `wavey-ai` Hugging Face account hosts Wavey-owned auxiliary bundles. Cohere
+Transcribe weights come from `CohereLabs/cohere-transcribe-03-2026`.
+
+After setup, the local model directory should be:
 
 ```text
 ../asr-api/models/cohere-transcribe-03-2026
 ```
 
-The directory should contain:
+and contain:
 
 - `model.safetensors`
 - `config.json`
 - `preprocessor_config.json`
+- `tokenizer.model`
 - `vocab.json`
 
 The Rust dependencies are pinned in `Cargo.lock`. Build the MLX executable from
