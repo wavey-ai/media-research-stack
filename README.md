@@ -36,13 +36,7 @@ Hugging Face login that has access to Cohere's gated model, then download and
 prepare the bundle in the sibling `asr-api` checkout:
 
 ```bash
-huggingface-cli login
-
-huggingface-cli download CohereLabs/cohere-transcribe-03-2026 \
-  --local-dir ../asr-api/models/cohere-transcribe-03-2026
-
-python3 ../asr-api/scripts/cohere-extract-vocab.py \
-  --model-dir ../asr-api/models/cohere-transcribe-03-2026
+../asr-api/scripts/setup-cohere-mlx-model.sh --login
 ```
 
 The `wavey-ai` Hugging Face account hosts Wavey-owned auxiliary bundles. Cohere
