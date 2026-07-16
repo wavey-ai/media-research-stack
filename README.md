@@ -102,6 +102,7 @@ MEDIA_RESEARCH_STACK_BENCH=1 \
 MEDIA_RESEARCH_STACK_URLS_FILE=target/research/channel-manifest.json \
 MEDIA_RESEARCH_STACK_REPORT=target/research/report.jsonl \
 MEDIA_RESEARCH_STACK_PROGRESS=target/research/progress.ndjson \
+MEDIA_RESEARCH_STACK_MEDIA_DIR=target/research/media \
 MEDIA_RESEARCH_STACK_TRANSCRIPTS_DIR=target/research/transcripts \
 MEDIA_RESEARCH_STACK_RESUME=1 \
 ASR_MODEL_DIR=../asr-api/models/cohere-transcribe-03-2026 \
@@ -137,8 +138,18 @@ recorded in `report.jsonl`. Set
 `MEDIA_RESEARCH_STACK_LOG_TRANSCRIPT_PREVIEWS=1` only when transcript text is
 appropriate in local logs.
 
+Set `MEDIA_RESEARCH_STACK_MEDIA_DIR` for long or repeatable sweeps. `av-ingest`
+downloads the selected compressed audio once, publishes it atomically into the
+cache, and subsequent runs read it locally through SoundKit. The cache preserves
+the source encoding; it does not invoke FFmpeg or create a transcoded media file.
+
 `MEDIA_RESEARCH_STACK_RESUME=1` reads successful source URLs from an existing
 report and skips them, so a long sweep can be restarted safely.
+
+Set `MEDIA_RESEARCH_STACK_CONTINUE_ON_ERROR=1` for channel-sized jobs. A failed
+source is recorded in the report and the remaining sources continue. The run
+still exits unsuccessfully after the sweep when any source failed, so a
+supervisor can restart it with resume enabled and retry only incomplete work.
 
 ## Runtime tuning
 

@@ -7,9 +7,9 @@ use asr_api::worker::WorkerState;
 use async_trait::async_trait;
 use av_ingest_proxy::{TranscribeAudioResolver, TranscribeAudioStream};
 use bytes::Bytes;
-use futures_util::future;
-use futures_util::StreamExt;
+use futures_util::{future, stream, StreamExt};
 use http::{header::CONTENT_TYPE, Request, Response, StatusCode};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::env;
@@ -18,6 +18,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::io::AsyncReadExt;
 use upload_response::{ResponseWatcher, UploadResponseService};
 use web_service::{BodyStream, ServerError, StreamWriter};
 
@@ -32,6 +33,23 @@ const DEFAULT_MASTERING_URLS: &[&str] = &[
 const DEFAULT_UPLOAD_RESPONSE_SLOT_SIZE_KB: usize = 32;
 const DEFAULT_UPLOAD_RESPONSE_RING_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_UPLOAD_RESPONSE_NUM_STREAMS: usize = 2;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SourceMetadata {
+    source_url: String,
+    duration_seconds: u64,
+    content_length: Option<u64>,
+    content_type: Option<String>,
+    source_mime_type: Option<String>,
+    resolver: String,
+    itag: Option<u64>,
+    cached: bool,
+}
+
+struct OpenedSource {
+    metadata: SourceMetadata,
+    body: BodyStream,
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn transcribes_audio_mastering_videos() -> Result<()> {
@@ -82,7 +100,9 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
     let report_path = report_path()?;
     let progress_path = progress_path()?;
     let transcripts_dir = transcripts_dir()?;
+    let media_dir = media_dir()?;
     let resume = env_flag("MEDIA_RESEARCH_STACK_RESUME");
+    let continue_on_error = env_flag("MEDIA_RESEARCH_STACK_CONTINUE_ON_ERROR");
     let completed_sources = if resume {
         completed_sources(&report_path)?
     } else {
@@ -93,9 +113,13 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
     if let Some(path) = &transcripts_dir {
         eprintln!("writing completed transcripts to {}", path.display());
     }
+    if let Some(path) = &media_dir {
+        eprintln!("caching compressed source audio in {}", path.display());
+    }
 
     let mut completed = 0usize;
     let mut skipped = 0usize;
+    let mut failed = 0usize;
     let mut aggregate_audio_seconds = 0.0f64;
     let mut aggregate_wall_seconds = 0.0f64;
 
@@ -111,55 +135,84 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
             continue;
         }
         let started_at = Instant::now();
-        eprintln!(
-            "[{}/{}] opening source {}",
-            index + 1,
-            urls.len(),
-            source_url
-        );
-        let audio = resolver.open_youtube_audio(source_url).await?;
-        let audio_seconds = audio
-            .duration_seconds
-            .with_context(|| format!("av-ingest did not return duration for {source_url}"))?
-            as f64;
-        let content_length = header_u64(&audio, "content-length");
-        let content_type =
-            header_string(&audio, CONTENT_TYPE.as_str()).or_else(|| audio.mime_type.clone());
-        let resolver_name = audio.resolver.clone();
-        let itag = audio.itag;
-        let source_mime_type = audio.mime_type.clone();
-        eprintln!(
-            "[{}/{}] opened {}s source via {} itag {:?} bytes {:?}",
-            index + 1,
-            urls.len(),
-            audio_seconds,
-            resolver_name,
-            itag,
-            content_length
-        );
-        let transcribe_started_at = Instant::now();
-        let transcript = asr
-            .transcribe(audio, &progress_path, index, source_url)
-            .await?;
-        eprintln!(
-            "[{}/{}] ASR stream returned in {:.2}s",
-            index + 1,
-            urls.len(),
-            transcribe_started_at.elapsed().as_secs_f64()
-        );
+        let source_result = async {
+            eprintln!(
+                "[{}/{}] opening source {}",
+                index + 1,
+                urls.len(),
+                source_url
+            );
+            let audio =
+                open_research_audio(&resolver, media_dir.as_deref(), index, source_url).await?;
+            let metadata = audio.metadata.clone();
+            let audio_seconds = metadata.duration_seconds as f64;
+            eprintln!(
+                "[{}/{}] opened {}s source via {} itag {:?} bytes {:?} cached={}",
+                index + 1,
+                urls.len(),
+                audio_seconds,
+                metadata.resolver,
+                metadata.itag,
+                metadata.content_length,
+                metadata.cached,
+            );
+            let transcribe_started_at = Instant::now();
+            let transcript = asr
+                .transcribe(audio, &progress_path, index, source_url)
+                .await?;
+            eprintln!(
+                "[{}/{}] ASR stream returned in {:.2}s",
+                index + 1,
+                urls.len(),
+                transcribe_started_at.elapsed().as_secs_f64()
+            );
+            let transcript_words = transcript.split_whitespace().count();
+            anyhow::ensure!(
+                transcript_words >= 5,
+                "short transcript for {source_url}: {transcript_words} words"
+            );
+            let transcript_path = transcripts_dir
+                .as_deref()
+                .map(|directory| write_transcript(directory, index, source_url, &transcript))
+                .transpose()?;
+            Ok::<_, anyhow::Error>((
+                metadata,
+                audio_seconds,
+                transcript,
+                transcript_words,
+                transcript_path,
+            ))
+        }
+        .await;
+        let (metadata, audio_seconds, transcript, transcript_words, transcript_path) =
+            match source_result {
+                Ok(result) => result,
+                Err(error) if continue_on_error => {
+                    failed += 1;
+                    let wall_seconds = started_at.elapsed().as_secs_f64();
+                    append_json_line(
+                        &report_path,
+                        &json!({
+                            "status": "error",
+                            "index": index,
+                            "source_url": source_url,
+                            "wall_seconds": wall_seconds,
+                            "error": format!("{error:#}"),
+                        }),
+                    )?;
+                    eprintln!(
+                        "[{}/{}] source failed after {:.1}s; continuing: {:#}",
+                        index + 1,
+                        urls.len(),
+                        wall_seconds,
+                        error
+                    );
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
         let wall_seconds = started_at.elapsed().as_secs_f64();
         let rtfx = audio_seconds / wall_seconds.max(0.001);
-
-        let transcript_words = transcript.split_whitespace().count();
-        assert!(
-            transcript_words >= 5,
-            "short transcript for {source_url}: {transcript_words} words"
-        );
-
-        let transcript_path = transcripts_dir
-            .as_deref()
-            .map(|directory| write_transcript(directory, index, source_url, &transcript))
-            .transpose()?;
 
         completed += 1;
         aggregate_audio_seconds += audio_seconds;
@@ -172,11 +225,12 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
             "audio_seconds": audio_seconds,
             "wall_seconds": wall_seconds,
             "rtfx": rtfx,
-            "content_length": content_length,
-            "content_type": content_type,
-            "source_mime_type": source_mime_type,
-            "resolver": resolver_name,
-            "itag": itag,
+            "content_length": metadata.content_length,
+            "content_type": metadata.content_type,
+            "source_mime_type": metadata.source_mime_type,
+            "resolver": metadata.resolver,
+            "itag": metadata.itag,
+            "cached_audio": metadata.cached,
             "transport": "in-process",
             "transcript_chars": transcript.chars().count(),
             "transcript_words": transcript_words,
@@ -195,11 +249,15 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
         );
     }
 
-    assert_eq!(completed + skipped, urls.len());
+    assert_eq!(completed + skipped + failed, urls.len());
     let aggregate_rtfx = aggregate_audio_seconds / aggregate_wall_seconds.max(0.001);
     eprintln!(
-        "research benchmark complete: {} processed, {} resumed, {:.1}s audio in {:.1}s wall = {:.2} aggregate RTFx",
-        completed, skipped, aggregate_audio_seconds, aggregate_wall_seconds, aggregate_rtfx
+        "research benchmark complete: {} processed, {} resumed, {} failed, {:.1}s audio in {:.1}s wall = {:.2} aggregate RTFx",
+        completed, skipped, failed, aggregate_audio_seconds, aggregate_wall_seconds, aggregate_rtfx
+    );
+    anyhow::ensure!(
+        failed == 0,
+        "research sweep completed with {failed} failed source(s)"
     );
     Ok(())
 }
@@ -271,13 +329,16 @@ impl LocalAsrHarness {
 
     async fn transcribe(
         &self,
-        audio: TranscribeAudioStream,
+        audio: OpenedSource,
         progress_path: &Path,
         source_index: usize,
         source_url: &str,
     ) -> Result<String> {
-        let content_type = header_string(&audio, CONTENT_TYPE.as_str())
-            .or_else(|| audio.mime_type.clone())
+        let content_type = audio
+            .metadata
+            .content_type
+            .clone()
+            .or_else(|| audio.metadata.source_mime_type.clone())
             .unwrap_or_else(|| "application/octet-stream".to_string());
         let listen_uri = if env_flag_any(&[
             "MEDIA_RESEARCH_STACK_INTERIM",
@@ -298,15 +359,144 @@ impl LocalAsrHarness {
         let collector = writer.collector();
         eprintln!("[{}] ASR stream starting", source_index + 1);
         self.ingress
-            .handle_listen_stream(
-                req,
-                body_stream_from_audio(audio, source_index, source_url),
-                Box::new(writer),
-            )
+            .handle_listen_stream(req, audio.body, Box::new(writer))
             .await
             .map_err(|error| anyhow!("streaming listen failed: {error}"))?;
         collector.transcript()
     }
+}
+
+async fn open_research_audio(
+    resolver: &TranscribeAudioResolver,
+    media_dir: Option<&Path>,
+    source_index: usize,
+    source_url: &str,
+) -> Result<OpenedSource> {
+    if let Some(directory) = media_dir {
+        if let Some(source) = open_cached_audio(directory, source_index, source_url).await? {
+            return Ok(source);
+        }
+        return cache_audio(resolver, directory, source_index, source_url).await;
+    }
+
+    let audio = resolver.open_youtube_audio(source_url).await?;
+    let metadata = source_metadata(&audio, source_url)?;
+    let body = body_stream_from_audio(audio, source_index, source_url);
+    Ok(OpenedSource { metadata, body })
+}
+
+fn source_metadata(audio: &TranscribeAudioStream, source_url: &str) -> Result<SourceMetadata> {
+    Ok(SourceMetadata {
+        source_url: source_url.to_string(),
+        duration_seconds: audio
+            .duration_seconds
+            .with_context(|| format!("av-ingest did not return duration for {source_url}"))?,
+        content_length: header_u64(audio, "content-length"),
+        content_type: header_string(audio, CONTENT_TYPE.as_str())
+            .or_else(|| audio.mime_type.clone()),
+        source_mime_type: audio.mime_type.clone(),
+        resolver: audio.resolver.clone(),
+        itag: audio.itag,
+        cached: false,
+    })
+}
+
+async fn open_cached_audio(
+    directory: &Path,
+    source_index: usize,
+    source_url: &str,
+) -> Result<Option<OpenedSource>> {
+    let stem = source_file_stem(source_index, source_url);
+    let media_path = directory.join(format!("{stem}.audio"));
+    let metadata_path = directory.join(format!("{stem}.json"));
+    let metadata_bytes = match fs::read(&metadata_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut metadata: SourceMetadata =
+        serde_json::from_slice(&metadata_bytes).with_context(|| {
+            format!(
+                "failed to parse cached metadata {}",
+                metadata_path.display()
+            )
+        })?;
+    if metadata.source_url != source_url {
+        return Ok(None);
+    }
+    let file_size = match fs::metadata(&media_path) {
+        Ok(value) => value.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if file_size == 0
+        || metadata
+            .content_length
+            .is_some_and(|length| length != file_size)
+    {
+        return Ok(None);
+    }
+    metadata.content_length = Some(file_size);
+    metadata.cached = true;
+    let body = body_stream_from_file(&media_path, source_index, source_url).await?;
+    Ok(Some(OpenedSource { metadata, body }))
+}
+
+async fn cache_audio(
+    resolver: &TranscribeAudioResolver,
+    directory: &Path,
+    source_index: usize,
+    source_url: &str,
+) -> Result<OpenedSource> {
+    let stem = source_file_stem(source_index, source_url);
+    let media_path = directory.join(format!("{stem}.audio"));
+    let partial_media_path = directory.join(format!("{stem}.audio.download"));
+    let metadata_path = directory.join(format!("{stem}.json"));
+    let partial_metadata_path = directory.join(format!("{stem}.json.part"));
+    let _ = fs::remove_file(&partial_media_path);
+    let _ = fs::remove_file(&partial_metadata_path);
+
+    eprintln!(
+        "[{}] downloading compressed source audio with av-ingest",
+        source_index + 1
+    );
+    let downloaded = resolver
+        .download_youtube_audio(source_url, &partial_media_path)
+        .await
+        .with_context(|| format!("failed to cache {source_url}"))?;
+    let metadata = SourceMetadata {
+        source_url: source_url.to_string(),
+        duration_seconds: downloaded
+            .duration_seconds
+            .with_context(|| format!("av-ingest did not return duration for {source_url}"))?,
+        content_length: Some(downloaded.content_length),
+        content_type: downloaded.mime_type.clone(),
+        source_mime_type: downloaded.mime_type,
+        resolver: downloaded.resolver,
+        itag: downloaded.itag,
+        cached: true,
+    };
+    fs::rename(&partial_media_path, &media_path)
+        .with_context(|| format!("failed to publish cached audio {}", media_path.display()))?;
+
+    eprintln!(
+        "[{}] cached {} compressed bytes from {}",
+        source_index + 1,
+        downloaded.content_length,
+        source_url
+    );
+    fs::write(
+        &partial_metadata_path,
+        serde_json::to_vec_pretty(&metadata)?,
+    )?;
+    fs::rename(&partial_metadata_path, &metadata_path).with_context(|| {
+        format!(
+            "failed to publish cache metadata {}",
+            metadata_path.display()
+        )
+    })?;
+    let body = body_stream_from_file(&media_path, source_index, source_url).await?;
+    Ok(OpenedSource { metadata, body })
 }
 
 impl Drop for LocalAsrHarness {
@@ -359,6 +549,49 @@ fn body_stream_from_audio(
             future::ready(Some(result))
         },
     ))
+}
+
+async fn body_stream_from_file(
+    path: &Path,
+    source_index: usize,
+    source_url: &str,
+) -> Result<BodyStream> {
+    let file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("failed to open cached audio {}", path.display()))?;
+    let content_length = file.metadata().await?.len();
+    let source_url = source_url.to_string();
+    Ok(Box::pin(stream::try_unfold(
+        (file, 0u64, 1024 * 1024u64),
+        move |(mut file, mut total_bytes, mut next_log_at)| {
+            let source_url = source_url.clone();
+            async move {
+                let mut buffer = vec![0u8; 64 * 1024];
+                let read = file.read(&mut buffer).await.map_err(|error| {
+                    ServerError::Config(format!("cached audio read failed: {error}"))
+                })?;
+                if read == 0 {
+                    return Ok(None);
+                }
+                buffer.truncate(read);
+                total_bytes += read as u64;
+                while total_bytes >= next_log_at {
+                    eprintln!(
+                        "[{}] cached body read {} / {} bytes from {}",
+                        source_index + 1,
+                        total_bytes,
+                        content_length,
+                        source_url
+                    );
+                    next_log_at += 1024 * 1024;
+                }
+                Ok(Some((
+                    Bytes::from(buffer),
+                    (file, total_bytes, next_log_at),
+                )))
+            }
+        },
+    )))
 }
 
 struct ProgressStreamWriter {
@@ -801,12 +1034,16 @@ fn transcripts_dir() -> Result<Option<PathBuf>> {
     Ok(Some(path))
 }
 
-fn write_transcript(
-    directory: &Path,
-    source_index: usize,
-    source_url: &str,
-    transcript: &str,
-) -> Result<PathBuf> {
+fn media_dir() -> Result<Option<PathBuf>> {
+    let Some(path) = first_env(&["MEDIA_RESEARCH_STACK_MEDIA_DIR"]).map(PathBuf::from) else {
+        return Ok(None);
+    };
+    fs::create_dir_all(&path)
+        .with_context(|| format!("failed to create media cache directory {}", path.display()))?;
+    Ok(Some(path))
+}
+
+fn source_file_stem(source_index: usize, source_url: &str) -> String {
     let source_id = source_url
         .split_once("v=")
         .map(|(_, value)| value)
@@ -824,7 +1061,19 @@ fn write_transcript(
             }
         })
         .collect::<String>();
-    let path = directory.join(format!("{:04}-{source_id}.txt", source_index + 1));
+    format!("{:04}-{source_id}", source_index + 1)
+}
+
+fn write_transcript(
+    directory: &Path,
+    source_index: usize,
+    source_url: &str,
+    transcript: &str,
+) -> Result<PathBuf> {
+    let path = directory.join(format!(
+        "{}.txt",
+        source_file_stem(source_index, source_url)
+    ));
     let temporary_path = path.with_extension("txt.part");
     let normalized = format!("{}\n", transcript.trim());
     fs::write(&temporary_path, normalized)

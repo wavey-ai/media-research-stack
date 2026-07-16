@@ -120,7 +120,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 [[package]]
 name = "asr-api"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/asr-api.git?rev=ffe647499eefe6b699dcd5dcce9405dfb32dfda2#ffe647499eefe6b699dcd5dcce9405dfb32dfda2"
+source = "git+https://github.com/wavey-ai/asr-api.git?rev=3e3ea8314d79ba2218a225274875cd7cf4b3e9b8#3e3ea8314d79ba2218a225274875cd7cf4b3e9b8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -143,8 +143,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "soundkit",
- "soundkit-decoder",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
+ "soundkit-decoder 0.1.0 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
  "tokio",
  "tokio-tungstenite",
  "tracing",
@@ -191,13 +191,13 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "av-api"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/av-api.git#47357284d18f9962b017d7e345fdaf886b922b63"
+source = "git+https://github.com/wavey-ai/av-api.git?rev=47357284d18f9962b017d7e345fdaf886b922b63#47357284d18f9962b017d7e345fdaf886b922b63"
 dependencies = [
  "anyhow",
  "bytes",
  "http",
- "soundkit",
- "soundkit-decoder",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git)",
+ "soundkit-decoder 0.1.0 (git+https://github.com/wavey-ai/soundkit.git)",
  "upload-response",
 ]
 
@@ -236,7 +236,7 @@ dependencies = [
 [[package]]
 name = "av-ingest-proxy"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/av-ingest.git?rev=a43a0d41b5a9f4886dbbce5d02bc491d4eb1ab58#a43a0d41b5a9f4886dbbce5d02bc491d4eb1ab58"
+source = "git+https://github.com/wavey-ai/av-ingest.git?rev=76780137c0f59ec28615a979be66b9d183dc038b#76780137c0f59ec28615a979be66b9d183dc038b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1683,6 +1683,7 @@ dependencies = [
  "clap 4.6.1",
  "futures-util",
  "http",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -2800,6 +2801,18 @@ dependencies = [
 [[package]]
 name = "soundkit"
 version = "0.12.2"
+source = "git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887#343e02218d9c7beda86807f178f5388e3f8d4887"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "frame-header",
+ "rubato",
+ "serde",
+]
+
+[[package]]
+name = "soundkit"
+version = "0.12.2"
 source = "git+https://github.com/wavey-ai/soundkit.git#343e02218d9c7beda86807f178f5388e3f8d4887"
 dependencies = [
  "byteorder",
@@ -2812,13 +2825,43 @@ dependencies = [
 [[package]]
 name = "soundkit-aac"
 version = "0.1.0"
+source = "git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887#343e02218d9c7beda86807f178f5388e3f8d4887"
+dependencies = [
+ "access-unit 0.1.3",
+ "fdk-aac",
+ "mp4",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
+ "tracing",
+]
+
+[[package]]
+name = "soundkit-aac"
+version = "0.1.0"
 source = "git+https://github.com/wavey-ai/soundkit.git#343e02218d9c7beda86807f178f5388e3f8d4887"
 dependencies = [
  "access-unit 0.1.3",
  "fdk-aac",
  "mp4",
- "soundkit",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git)",
  "tracing",
+]
+
+[[package]]
+name = "soundkit-decoder"
+version = "0.1.0"
+source = "git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887#343e02218d9c7beda86807f178f5388e3f8d4887"
+dependencies = [
+ "access-unit 0.1.2",
+ "bytes",
+ "frame-header",
+ "rtrb",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
+ "soundkit-aac 0.1.0 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
+ "soundkit-flac 0.1.0 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
+ "soundkit-mp3 0.1.0 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
+ "soundkit-ogg-opus 0.0.1 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
+ "soundkit-opus 0.0.1 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
+ "soundkit-webm 0.0.1 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
 ]
 
 [[package]]
@@ -2830,13 +2873,26 @@ dependencies = [
  "bytes",
  "frame-header",
  "rtrb",
- "soundkit",
- "soundkit-aac",
- "soundkit-flac",
- "soundkit-mp3",
- "soundkit-ogg-opus",
- "soundkit-opus",
- "soundkit-webm",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git)",
+ "soundkit-aac 0.1.0 (git+https://github.com/wavey-ai/soundkit.git)",
+ "soundkit-flac 0.1.0 (git+https://github.com/wavey-ai/soundkit.git)",
+ "soundkit-mp3 0.1.0 (git+https://github.com/wavey-ai/soundkit.git)",
+ "soundkit-ogg-opus 0.0.1 (git+https://github.com/wavey-ai/soundkit.git)",
+ "soundkit-opus 0.0.1 (git+https://github.com/wavey-ai/soundkit.git)",
+ "soundkit-webm 0.0.1 (git+https://github.com/wavey-ai/soundkit.git)",
+]
+
+[[package]]
+name = "soundkit-flac"
+version = "0.1.0"
+source = "git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887#343e02218d9c7beda86807f178f5388e3f8d4887"
+dependencies = [
+ "access-unit 0.1.2",
+ "claxon",
+ "libc",
+ "libflac-sys",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
+ "tracing",
 ]
 
 [[package]]
@@ -2848,7 +2904,17 @@ dependencies = [
  "claxon",
  "libc",
  "libflac-sys",
- "soundkit",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git)",
+ "tracing",
+]
+
+[[package]]
+name = "soundkit-mp3"
+version = "0.1.0"
+source = "git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887#343e02218d9c7beda86807f178f5388e3f8d4887"
+dependencies = [
+ "nanomp3",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
  "tracing",
 ]
 
@@ -2858,7 +2924,19 @@ version = "0.1.0"
 source = "git+https://github.com/wavey-ai/soundkit.git#343e02218d9c7beda86807f178f5388e3f8d4887"
 dependencies = [
  "nanomp3",
- "soundkit",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git)",
+ "tracing",
+]
+
+[[package]]
+name = "soundkit-ogg-opus"
+version = "0.0.1"
+source = "git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887#343e02218d9c7beda86807f178f5388e3f8d4887"
+dependencies = [
+ "frame-header",
+ "memchr",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
+ "soundkit-opus 0.0.1 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
  "tracing",
 ]
 
@@ -2869,8 +2947,19 @@ source = "git+https://github.com/wavey-ai/soundkit.git#343e02218d9c7beda86807f17
 dependencies = [
  "frame-header",
  "memchr",
- "soundkit",
- "soundkit-opus",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git)",
+ "soundkit-opus 0.0.1 (git+https://github.com/wavey-ai/soundkit.git)",
+ "tracing",
+]
+
+[[package]]
+name = "soundkit-opus"
+version = "0.0.1"
+source = "git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887#343e02218d9c7beda86807f178f5388e3f8d4887"
+dependencies = [
+ "frame-header",
+ "libopus",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
  "tracing",
 ]
 
@@ -2881,7 +2970,18 @@ source = "git+https://github.com/wavey-ai/soundkit.git#343e02218d9c7beda86807f17
 dependencies = [
  "frame-header",
  "libopus",
- "soundkit",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git)",
+ "tracing",
+]
+
+[[package]]
+name = "soundkit-webm"
+version = "0.0.1"
+source = "git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887#343e02218d9c7beda86807f178f5388e3f8d4887"
+dependencies = [
+ "frame-header",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
+ "soundkit-opus 0.0.1 (git+https://github.com/wavey-ai/soundkit.git?rev=343e02218d9c7beda86807f178f5388e3f8d4887)",
  "tracing",
 ]
 
@@ -2891,8 +2991,8 @@ version = "0.0.1"
 source = "git+https://github.com/wavey-ai/soundkit.git#343e02218d9c7beda86807f178f5388e3f8d4887"
 dependencies = [
  "frame-header",
- "soundkit",
- "soundkit-opus",
+ "soundkit 0.12.2 (git+https://github.com/wavey-ai/soundkit.git)",
+ "soundkit-opus 0.0.1 (git+https://github.com/wavey-ai/soundkit.git)",
  "tracing",
 ]
 
