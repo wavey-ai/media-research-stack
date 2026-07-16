@@ -1,20 +1,19 @@
 # media-research-stack
 
-`media-research-stack` is the supported local macOS runner for research jobs
-that need public-media resolution and streaming speech recognition in one
-process.
+`media-research-stack` is the supported local macOS runner for turning public
+media into research transcripts, progress logs, and ASR timing data.
 
-It starts:
+It can:
 
-- `av-ingest` on `http://127.0.0.1:8444`;
-- Deepgram-compatible ASR on `https://127.0.0.1:8443/v1/listen`;
-- an in-process SoundKit decoder that converts compressed source audio to mono
-  16 kHz PCM as bytes arrive; and
-- one Cohere Transcribe MLX worker for Apple Silicon.
+- resolve public media with `av-ingest`;
+- decode compressed audio with SoundKit as bytes arrive;
+- run Cohere Transcribe through the local MLX runtime on Apple Silicon; and
+- expose a Deepgram-compatible `/v1/listen` endpoint for clients that need the
+  same ASR surface.
 
-No FFmpeg process is used. `av-ingest` resolves and streams the selected source
-format, SoundKit incrementally decodes formats such as WebM/Opus, and `asr-api`
-chunks the normalized PCM into 30-second windows with two seconds of overlap.
+For channel research, `av-ingest` selects a source audio format, SoundKit
+incrementally decodes formats such as WebM/Opus to mono 16 kHz PCM, and
+`asr-api` transcribes 30-second windows with two seconds of overlap.
 
 ## Platform and requirements
 
@@ -26,16 +25,23 @@ Install the command-line dependencies:
 brew install libvpx pkg-config yt-dlp jq
 ```
 
-You also need Rust, Swift, and a Cohere MLX model bundle containing:
+You also need Rust, Swift, and access to Wavey's Cohere Transcribe MLX model
+bundle. Download the bundle from the Wavey Hugging Face model repo you have
+access to, or copy an existing local bundle into:
+
+```text
+../asr-api/models/cohere-transcribe-03-2026
+```
+
+The directory should contain:
 
 - `model.safetensors`
 - `config.json`
 - `preprocessor_config.json`
 - `vocab.json`
 
-The Rust dependencies are pinned in `Cargo.lock`. The MLX executable is built
-from the current `asr-api` checkout because model weights are not stored in this
-repository:
+The Rust dependencies are pinned in `Cargo.lock`. Build the MLX executable from
+the current `asr-api` checkout:
 
 ```bash
 swift build -c release --package-path ../asr-api/apple
@@ -124,11 +130,11 @@ names remain supported as compatibility aliases.
 - observed RTFx; and
 - transcript character and word counts.
 
-`progress.ndjson` records response status, timestamps, and transcript sizes. It
-redacts transcript and word text by default. This is the right default for
-third-party competitor research: keep manifests, measurements, tags, term
-counts, and summaries as durable artifacts rather than creating a substitute
-archive of the source material.
+`progress.ndjson` records response status, timestamps, and transcript sizes.
+Transcript and word text are written only when transcript storage is enabled.
+For public-media research, keep manifests, measurements, tags, term counts, and
+summaries as the durable artifacts unless full transcript retention is
+appropriate for the sources you are working with.
 
 For recordings you own or are authorized to reproduce, set
 `MEDIA_RESEARCH_STACK_STORE_TRANSCRIPTS=1` to retain full ASR events and set
@@ -141,7 +147,7 @@ appropriate in local logs.
 Set `MEDIA_RESEARCH_STACK_MEDIA_DIR` for long or repeatable sweeps. `av-ingest`
 downloads the selected compressed audio once, publishes it atomically into the
 cache, and subsequent runs read it locally through SoundKit. The cache preserves
-the source encoding; it does not invoke FFmpeg or create a transcoded media file.
+the selected source encoding for repeatable ASR runs.
 
 `MEDIA_RESEARCH_STACK_RESUME=1` reads successful source URLs from an existing
 report and skips them, so a long sweep can be restarted safely.
