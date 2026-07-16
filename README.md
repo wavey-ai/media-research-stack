@@ -102,6 +102,7 @@ MEDIA_RESEARCH_STACK_BENCH=1 \
 MEDIA_RESEARCH_STACK_URLS_FILE=target/research/channel-manifest.json \
 MEDIA_RESEARCH_STACK_REPORT=target/research/report.jsonl \
 MEDIA_RESEARCH_STACK_PROGRESS=target/research/progress.ndjson \
+MEDIA_RESEARCH_STACK_TRANSCRIPTS_DIR=target/research/transcripts \
 MEDIA_RESEARCH_STACK_RESUME=1 \
 ASR_MODEL_DIR=../asr-api/models/cohere-transcribe-03-2026 \
 ASR_MLX_TRANSCRIBE_BIN=../asr-api/apple/.build/release/asr-mlx-transcribe \
@@ -129,7 +130,10 @@ counts, and summaries as durable artifacts rather than creating a substitute
 archive of the source material.
 
 For recordings you own or are authorized to reproduce, set
-`MEDIA_RESEARCH_STACK_STORE_TRANSCRIPTS=1` to retain full ASR events. Set
+`MEDIA_RESEARCH_STACK_STORE_TRANSCRIPTS=1` to retain full ASR events and set
+`MEDIA_RESEARCH_STACK_TRANSCRIPTS_DIR` to write one clean UTF-8 transcript per
+completed source. Transcript files are published atomically and their paths are
+recorded in `report.jsonl`. Set
 `MEDIA_RESEARCH_STACK_LOG_TRANSCRIPT_PREVIEWS=1` only when transcript text is
 appropriate in local logs.
 

@@ -81,6 +81,7 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
 
     let report_path = report_path()?;
     let progress_path = progress_path()?;
+    let transcripts_dir = transcripts_dir()?;
     let resume = env_flag("MEDIA_RESEARCH_STACK_RESUME");
     let completed_sources = if resume {
         completed_sources(&report_path)?
@@ -89,6 +90,9 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
     };
     eprintln!("writing benchmark report to {}", report_path.display());
     eprintln!("writing streaming progress to {}", progress_path.display());
+    if let Some(path) = &transcripts_dir {
+        eprintln!("writing completed transcripts to {}", path.display());
+    }
 
     let mut completed = 0usize;
     let mut skipped = 0usize;
@@ -152,6 +156,11 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
             "short transcript for {source_url}: {transcript_words} words"
         );
 
+        let transcript_path = transcripts_dir
+            .as_deref()
+            .map(|directory| write_transcript(directory, index, source_url, &transcript))
+            .transpose()?;
+
         completed += 1;
         aggregate_audio_seconds += audio_seconds;
         aggregate_wall_seconds += wall_seconds;
@@ -171,6 +180,7 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
             "transport": "in-process",
             "transcript_chars": transcript.chars().count(),
             "transcript_words": transcript_words,
+            "transcript_path": transcript_path,
         });
         append_json_line(&report_path, &record)?;
 
@@ -782,6 +792,48 @@ fn progress_path() -> Result<PathBuf> {
     Ok(path)
 }
 
+fn transcripts_dir() -> Result<Option<PathBuf>> {
+    let Some(path) = first_env(&["MEDIA_RESEARCH_STACK_TRANSCRIPTS_DIR"]).map(PathBuf::from) else {
+        return Ok(None);
+    };
+    fs::create_dir_all(&path)
+        .with_context(|| format!("failed to create transcript directory {}", path.display()))?;
+    Ok(Some(path))
+}
+
+fn write_transcript(
+    directory: &Path,
+    source_index: usize,
+    source_url: &str,
+    transcript: &str,
+) -> Result<PathBuf> {
+    let source_id = source_url
+        .split_once("v=")
+        .map(|(_, value)| value)
+        .unwrap_or(source_url)
+        .split(['&', '?', '#', '/'])
+        .find(|value| !value.is_empty())
+        .unwrap_or("source");
+    let source_id = source_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let path = directory.join(format!("{:04}-{source_id}.txt", source_index + 1));
+    let temporary_path = path.with_extension("txt.part");
+    let normalized = format!("{}\n", transcript.trim());
+    fs::write(&temporary_path, normalized)
+        .with_context(|| format!("failed to write transcript {}", temporary_path.display()))?;
+    fs::rename(&temporary_path, &path)
+        .with_context(|| format!("failed to publish transcript {}", path.display()))?;
+    Ok(path)
+}
+
 fn completed_sources(path: &Path) -> Result<HashSet<String>> {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -1035,5 +1087,31 @@ mod tests {
     #[test]
     fn ring_size_rounds_up_to_whole_slots() {
         assert_eq!(slots_for_ring_bytes(65_537, 32_768), 3);
+    }
+
+    #[test]
+    fn writes_a_clean_transcript_atomically() {
+        let directory = env::temp_dir().join(format!(
+            "media-research-stack-transcript-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+
+        let path = write_transcript(
+            &directory,
+            6,
+            "https://www.youtube.com/watch?v=video-id&feature=test",
+            "  exact transcript text  ",
+        )
+        .unwrap();
+
+        assert_eq!(path.file_name().unwrap(), "0007-video-id.txt");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "exact transcript text\n"
+        );
+        assert!(!path.with_extension("txt.part").exists());
+        fs::remove_dir_all(directory).unwrap();
     }
 }
