@@ -1,19 +1,23 @@
 # media-research-stack
 
-`media-research-stack` is the supported local macOS runner for turning public
-media into research transcripts, progress logs, and ASR timing data.
+[`media-research-stack`](https://github.com/wavey-ai/media-research-stack) is
+the supported local macOS runner for turning public media into research
+transcripts, progress logs, and ASR timing data.
 
 It can:
 
-- resolve public media with `av-ingest`;
-- decode compressed audio with SoundKit as bytes arrive;
+- resolve public media with [`av-ingest`](https://github.com/wavey-ai/av-ingest);
+- decode compressed audio with [SoundKit](https://github.com/wavey-ai/soundkit)
+  as bytes arrive;
 - run Cohere Transcribe through the local MLX runtime on Apple Silicon; and
 - serve a Deepgram-compatible `/v1/listen` endpoint for clients that need the
   same ASR surface.
 
-For channel research, `av-ingest` selects a source audio format, SoundKit
+For channel research, [`av-ingest`](https://github.com/wavey-ai/av-ingest)
+selects a source audio format, [SoundKit](https://github.com/wavey-ai/soundkit)
 incrementally decodes formats such as WebM/Opus to mono 16 kHz PCM, and
-`asr-api` transcribes 30-second windows with two seconds of overlap.
+[`asr-api`](https://github.com/wavey-ai/asr-api) transcribes 30-second windows
+with two seconds of overlap.
 
 ## Platform and requirements
 
@@ -33,14 +37,15 @@ python3 -m pip install -U huggingface_hub sentencepiece
 
 You also need Rust, Swift, and the Cohere Transcribe MLX model bundle. Use a
 Hugging Face login that has access to Cohere's gated model, then download and
-prepare the bundle in the sibling `asr-api` checkout:
+prepare the bundle in the sibling
+[`asr-api`](https://github.com/wavey-ai/asr-api) checkout:
 
 ```bash
 ../asr-api/scripts/setup-cohere-mlx-model.sh --login
 ```
 
-The `wavey-ai` Hugging Face account hosts Wavey-owned auxiliary bundles. Cohere
-Transcribe weights come from `CohereLabs/cohere-transcribe-03-2026`.
+The setup script downloads
+[`CohereLabs/cohere-transcribe-03-2026`](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026).
 
 After setup, the local model directory should be:
 
@@ -57,7 +62,7 @@ and contain:
 - `vocab.json`
 
 The Rust dependencies are pinned in `Cargo.lock`. Build the MLX executable from
-the current `asr-api` checkout:
+the current [`asr-api`](https://github.com/wavey-ai/asr-api) checkout:
 
 ```bash
 swift build -c release --package-path ../asr-api/apple
@@ -116,8 +121,10 @@ Git.
 
 ## Run a research sweep
 
-The opt-in integration runner sends each source directly from `av-ingest` into
-SoundKit and ASR without an intermediate media file:
+The opt-in integration runner sends each source directly from
+[`av-ingest`](https://github.com/wavey-ai/av-ingest) into
+[SoundKit](https://github.com/wavey-ai/soundkit) and ASR without an intermediate
+media file:
 
 ```bash
 MEDIA_RESEARCH_STACK_BENCH=1 \
@@ -160,10 +167,11 @@ recorded in `report.jsonl`. Set
 `MEDIA_RESEARCH_STACK_LOG_TRANSCRIPT_PREVIEWS=1` only when transcript text is
 appropriate in local logs.
 
-Set `MEDIA_RESEARCH_STACK_MEDIA_DIR` for long or repeatable sweeps. `av-ingest`
-downloads the selected compressed audio once, publishes it atomically into the
-cache, and subsequent runs read it locally through SoundKit. The cache preserves
-the selected source encoding for repeatable ASR runs.
+Set `MEDIA_RESEARCH_STACK_MEDIA_DIR` for long or repeatable sweeps.
+[`av-ingest`](https://github.com/wavey-ai/av-ingest) downloads the selected
+compressed audio once, publishes it atomically into the cache, and subsequent
+runs read it locally through [SoundKit](https://github.com/wavey-ai/soundkit).
+The cache preserves the selected source encoding for repeatable ASR runs.
 
 `MEDIA_RESEARCH_STACK_RESUME=1` reads successful source URLs from an existing
 report and skips them, so a long sweep can be restarted safely.
@@ -194,7 +202,7 @@ loads a separate model copy.
 
 YouTube authentication, cookies, visitor data, and PO-token settings use the
 standard `AV_INGEST_PROXY_YTDLP_*` and `AV_INGEST_PROXY_YOUTUBE_*` environment
-variables documented by `av-ingest`.
+variables documented by [`av-ingest`](https://github.com/wavey-ai/av-ingest).
 
 ## Development checks
 
