@@ -44,25 +44,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aifc"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00259ade1408f212e06fbf52b31677526eb81d91ff3f71d1ac8c7fa6f4eaf31f"
-dependencies = [
- "audio-codec-algorithms",
-]
-
-[[package]]
-name = "alac"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "498a34d3cad5f3b23cc217ab489424ebcfffed186e30ad5ac02624e50df2c2b8"
-dependencies = [
- "caf",
- "mp4parse",
-]
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -137,15 +118,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "arrayvec"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
-
-[[package]]
 name = "asr-api"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/asr-api.git#1c8f3ac335ad5251bfabde3e60ecba22c9fe4dc0"
+source = "git+https://github.com/wavey-ai/asr-api.git?rev=ffe647499eefe6b699dcd5dcce9405dfb32dfda2#ffe647499eefe6b699dcd5dcce9405dfb32dfda2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -153,7 +128,6 @@ dependencies = [
  "bytes",
  "chrono",
  "clap 4.6.1",
- "cohere-transcribe-rs",
  "crossbeam-channel",
  "dotenvy",
  "futures-util",
@@ -165,6 +139,7 @@ dependencies = [
  "hyper-util",
  "ndarray",
  "reqwest",
+ "rustfft",
  "serde",
  "serde_json",
  "sha2",
@@ -176,7 +151,7 @@ dependencies = [
  "tracing-subscriber",
  "upload-response",
  "url",
- "web-service 0.1.0 (git+https://github.com/wavey-ai/web-services.git)",
+ "web-service",
 ]
 
 [[package]]
@@ -206,12 +181,6 @@ dependencies = [
  "libc",
  "winapi",
 ]
-
-[[package]]
-name = "audio-codec-algorithms"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3befb328a44333ff731148d7f4acb322e57748d48fee4e424ae1fa786d765501"
 
 [[package]]
 name = "autocfg"
@@ -267,7 +236,7 @@ dependencies = [
 [[package]]
 name = "av-ingest-proxy"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/av-ingest.git#533c1d25eb9e0efbe03388ff37df75f7c0aa7880"
+source = "git+https://github.com/wavey-ai/av-ingest.git?rev=a43a0d41b5a9f4886dbbce5d02bc491d4eb1ab58#a43a0d41b5a9f4886dbbce5d02bc491d4eb1ab58"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -283,10 +252,11 @@ dependencies = [
  "pkg-config",
  "reqwest",
  "serde_json",
+ "sha1",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "web-service 0.1.0 (git+https://github.com/wavey-ai/web-services.git?rev=065ccab2d5f4a61ccc0bf7b3e3d32da2759828f4)",
+ "web-service",
 ]
 
 [[package]]
@@ -309,62 +279,6 @@ dependencies = [
  "cmake",
  "dunce",
  "fs_extra",
-]
-
-[[package]]
-name = "axum"
-version = "0.7.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edca88bc138befd0323b20752846e6587272d3b03b0343c8ea28a6f819e6e71f"
-dependencies = [
- "async-trait",
- "axum-core",
- "bytes",
- "futures-util",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-util",
- "itoa",
- "matchit",
- "memchr",
- "mime",
- "multer",
- "percent-encoding",
- "pin-project-lite",
- "rustversion",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "serde_urlencoded",
- "sync_wrapper",
- "tokio",
- "tower",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "axum-core"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09f2bd6146b97ae3359fa0cc6d6b376d9539582c7b4220f041a33ec24c226199"
-dependencies = [
- "async-trait",
- "bytes",
- "futures-util",
- "http",
- "http-body",
- "http-body-util",
- "mime",
- "pin-project-lite",
- "rustversion",
- "sync_wrapper",
- "tower-layer",
- "tower-service",
- "tracing",
 ]
 
 [[package]]
@@ -444,15 +358,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 
 [[package]]
-name = "bitreader"
-version = "0.3.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "886559b1e163d56c765bc3a985febb4eee8009f625244511d8ee3c432e08c066"
-dependencies = [
- "cfg-if",
-]
-
-[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -512,24 +417,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util 0.6.10",
-]
-
-[[package]]
-name = "bytesstr"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d255284ba151c912781bb2eba4fa1983b8de636c0712f09e5f98ab3a4d8e09d8"
-dependencies = [
- "bytes",
-]
-
-[[package]]
-name = "caf"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fb1715abe8ffd1caeca4e30b9d803ecb75698bef0e59d207d4b0f16757744e7"
-dependencies = [
- "byteorder",
 ]
 
 [[package]]
@@ -660,30 +547,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cohere-transcribe-rs"
-version = "0.1.1"
-source = "git+https://github.com/second-state/cohere_transcribe_rs.git?rev=d7fd40d520f4c52f2f165b40b9e1f6bce78c34a9#d7fd40d520f4c52f2f165b40b9e1f6bce78c34a9"
-dependencies = [
- "anyhow",
- "axum",
- "clap 4.6.1",
- "cmake",
- "num-complex",
- "rubato 0.16.2",
- "rustfft",
- "safetensors",
- "serde",
- "serde_json",
- "symphonia",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tower-http 0.5.2",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -771,15 +634,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
-name = "deranged"
-version = "0.5.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
-dependencies = [
- "powerfmt",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -806,12 +660,6 @@ name = "dotenvy"
 version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
-
-[[package]]
-name = "downcast-rs"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "dunce"
@@ -878,64 +726,6 @@ name = "error-chain"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9435d864e017c3c6afeac1654189b06cdb491cf2ff73dbf0d73b0f292f42ff8"
-
-[[package]]
-name = "extended"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
-
-[[package]]
-name = "ezk"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e51a5a591d807b43d312e40b0b9fe9b457e01b30d5f93af7af3188240b20ef6"
-dependencies = [
- "downcast-rs",
- "parking_lot",
- "reusable-box",
- "slotmap",
- "tokio",
-]
-
-[[package]]
-name = "ezk-audio"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e9290c43fb0b524a7191b3bc326bd4252bb1e080e27f4667641ad91bc845471"
-dependencies = [
- "bitflags 2.11.1",
- "byte-slice-cast",
- "ezk",
-]
-
-[[package]]
-name = "ezk-g722"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b255b268bb31835375df113a7bd162474f4facd49027861034962e5f90a62168"
-dependencies = [
- "bytes",
- "ezk",
- "ezk-audio",
- "ezk-rtp",
-]
-
-[[package]]
-name = "ezk-rtp"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c88ed6c2d251d6411e3c10df8e0a78767804894515e664a49142e53db4ac9126"
-dependencies = [
- "arrayvec",
- "bytes",
- "bytesstr",
- "ezk",
- "rand 0.8.6",
- "rtcp-types",
- "rtp-types",
- "time",
-]
 
 [[package]]
 name = "failure"
@@ -1152,15 +942,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "g729-sys"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c0115766e9b2dcbc585946d207299fe2fce9bf0b8d4ba0d3592c6e0f66fe116"
-dependencies = [
- "anyhow",
-]
-
-[[package]]
 name = "gen-id"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1244,7 +1025,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 [[package]]
 name = "gpu-worker"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/gpu-workers.git#0de57977785894b27c28d13228bb872e04e61b5e"
+source = "git+https://github.com/wavey-ai/gpu-workers.git#49b133a0d7f4fa1e0b7c864f279bc1887439bca1"
 dependencies = [
  "gpu-worker-upload-response",
 ]
@@ -1252,7 +1033,7 @@ dependencies = [
 [[package]]
 name = "gpu-worker-upload-response"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/gpu-workers.git#0de57977785894b27c28d13228bb872e04e61b5e"
+source = "git+https://github.com/wavey-ai/gpu-workers.git#49b133a0d7f4fa1e0b7c864f279bc1887439bca1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1262,16 +1043,6 @@ dependencies = [
  "tokio",
  "tracing",
  "upload-response",
-]
-
-[[package]]
-name = "gsm-sys"
-version = "0.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1563848f92f081879d3d4b9d18f01d45b9d207fcd64774d5687a8e8df9148d4"
-dependencies = [
- "cc",
- "libc",
 ]
 
 [[package]]
@@ -1419,9 +1190,9 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "1.4.0"
+version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3ba2a386d7f85a81f119ad7498ebe444d2e22c2af0b86b069416ace48b3311a"
+checksum = "6970f50e31d6fc17d3fa27329444bfa74e196cf62e95052a3f6fee181dba6425"
 dependencies = [
  "bytes",
  "itoa",
@@ -1479,9 +1250,9 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hyper"
-version = "1.9.0"
+version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6299f016b246a94207e63da54dbe807655bf9e00044f73ded42c3ac5305fbcca"
+checksum = "55281c53a1894c864990125767da440a4e630446785086f52523b20033b74498"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1807,17 +1578,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
-name = "lewton"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "777b48df9aaab155475a83a7df3070395ea1ac6902f5cd062b8f2b028075c030"
-dependencies = [
- "byteorder",
- "ogg",
- "tinyvec",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1826,7 +1586,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 [[package]]
 name = "libflac-sys"
 version = "0.3.4"
-source = "git+https://github.com/mgeier/libflac-sys.git#1cb7eda7659989dd401745945e9c030f5bb076d9"
+source = "git+https://github.com/mgeier/libflac-sys.git#1feb6450c4e0dbc6c6dcaa9a71fac5200c0ffbaf"
 dependencies = [
  "cmake",
  "libc",
@@ -1902,12 +1662,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "matchit"
-version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
-
-[[package]]
 name = "matrixmultiply"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1934,7 +1688,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "upload-response",
- "web-service 0.1.0 (git+https://github.com/wavey-ai/web-services.git)",
+ "web-service",
 ]
 
 [[package]]
@@ -2039,35 +1793,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mp4parse"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7316728464443fe5793a805dde3257864e9690cf46374daff3ce93de1df2f254"
-dependencies = [
- "bitreader",
- "byteorder",
- "log",
- "num-traits",
-]
-
-[[package]]
-name = "multer"
-version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83e87776546dc87511aa5ee218730c92b666d7264ab6ed41f9d215af9cd5224b"
-dependencies = [
- "bytes",
- "encoding_rs",
- "futures-util",
- "http",
- "httparse",
- "memchr",
- "mime",
- "spin",
- "version_check",
-]
-
-[[package]]
 name = "nanomp3"
 version = "0.1.1"
 source = "git+https://github.com/wavey-ai/nanomp3.git#c1bad1bbfde1370d2d8252847ea409e9b3108436"
@@ -2143,12 +1868,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "num-conv"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
-
-[[package]]
 name = "num-derive"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2196,15 +1915,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
 dependencies = [
  "memchr",
-]
-
-[[package]]
-name = "ogg"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6951b4e8bf21c8193da321bcce9c9dd2e13c858fe078bf9054a288b419ae5d6e"
-dependencies = [
- "byteorder",
 ]
 
 [[package]]
@@ -2272,35 +1982,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oxideav-ac3"
-version = "0.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bcbb5c1168388942ce5cc2a7ede53dbb82c15df01e8e07cce6e6da41e2b96ac"
-dependencies = [
- "oxideav-core",
-]
-
-[[package]]
-name = "oxideav-core"
-version = "0.1.26"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "068fc43174e7aa261fab5a399a6bf206ec3daf324e8df7fb17ecbcba2146a663"
-dependencies = [
- "bytemuck",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "oxideav-speex"
-version = "0.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35a01a9d645a0bdcd7745c6d390afd27f6cf548b19511a9cc7674e5384a8e172"
-dependencies = [
- "oxideav-core",
-]
-
-[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2350,7 +2031,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 [[package]]
 name = "playlists"
 version = "0.1.3"
-source = "git+https://github.com/wavey-ai/playlists.git#a069d9ec7bd97f1b96a6b435541be8304fc680a4"
+source = "git+https://codeberg.org/wavey-ai/playlists.git?rev=a069d9ec7bd97f1b96a6b435541be8304fc680a4#a069d9ec7bd97f1b96a6b435541be8304fc680a4"
 dependencies = [
  "access-unit 0.1.2",
  "bytes",
@@ -2410,12 +2091,6 @@ checksum = "0103b1cef7ec0cf76490e969665504990193874ea05c85ff9bab8b911d0a0564"
 dependencies = [
  "zerovec",
 ]
-
-[[package]]
-name = "powerfmt"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "ppv-lite86"
@@ -2537,7 +2212,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2757,7 +2432,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util 0.7.18",
  "tower",
- "tower-http 0.6.11",
+ "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -2766,12 +2441,6 @@ dependencies = [
  "web-sys",
  "webpki-roots 1.0.7",
 ]
-
-[[package]]
-name = "reusable-box"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b9cb77e81b1d036c2543436df7c5ac85839b1a774a826a9f2607c57094d1a23"
 
 [[package]]
 name = "ring"
@@ -2788,25 +2457,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rtcp-types"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce5248489db464de29835170cd1f6e19933146b0016789effc59cb53d9f13844"
-dependencies = [
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "rtp-types"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bb90df8268abfe08452ef2dae9e867a54edfdaa71b3127ef47d8b031f77ac73"
-dependencies = [
- "smallvec",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "rtrb"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2817,18 +2467,6 @@ name = "rubato"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6dd52e80cfc21894deadf554a5673002938ae4625f7a283e536f9cf7c17b0d5"
-dependencies = [
- "num-complex",
- "num-integer",
- "num-traits",
- "realfft",
-]
-
-[[package]]
-name = "rubato"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5258099699851cfd0082aeb645feb9c084d9a5e1f1b8d5372086b989fc5e56a1"
 dependencies = [
  "num-complex",
  "num-integer",
@@ -2878,7 +2516,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2974,16 +2612,6 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
-
-[[package]]
-name = "safetensors"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc0cdb7198d738a111f6df8fef42cb175412c311d0c4ac9126ff4e550ad1a0e8"
-dependencies = [
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "schannel"
@@ -3083,17 +2711,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_path_to_error"
-version = "0.1.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
-dependencies = [
- "itoa",
- "serde",
- "serde_core",
-]
-
-[[package]]
 name = "serde_urlencoded"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3165,15 +2782,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
-name = "slotmap"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
-dependencies = [
- "version_check",
-]
-
-[[package]]
 name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3192,19 +2800,19 @@ dependencies = [
 [[package]]
 name = "soundkit"
 version = "0.12.2"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
+source = "git+https://github.com/wavey-ai/soundkit.git#343e02218d9c7beda86807f178f5388e3f8d4887"
 dependencies = [
  "byteorder",
  "bytes",
  "frame-header",
- "rubato 0.14.1",
+ "rubato",
  "serde",
 ]
 
 [[package]]
 name = "soundkit-aac"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
+source = "git+https://github.com/wavey-ai/soundkit.git#343e02218d9c7beda86807f178f5388e3f8d4887"
 dependencies = [
  "access-unit 0.1.3",
  "fdk-aac",
@@ -3214,81 +2822,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "soundkit-ac3"
-version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
-dependencies = [
- "frame-header",
- "oxideav-ac3",
- "oxideav-core",
- "soundkit",
-]
-
-[[package]]
-name = "soundkit-aiff"
-version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
-dependencies = [
- "aifc",
- "frame-header",
- "soundkit",
-]
-
-[[package]]
-name = "soundkit-alac"
-version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
-dependencies = [
- "alac",
- "frame-header",
- "soundkit",
-]
-
-[[package]]
-name = "soundkit-amr"
-version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
-dependencies = [
- "pkg-config",
- "soundkit",
-]
-
-[[package]]
 name = "soundkit-decoder"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
+source = "git+https://github.com/wavey-ai/soundkit.git#343e02218d9c7beda86807f178f5388e3f8d4887"
 dependencies = [
- "access-unit 0.1.3",
+ "access-unit 0.1.2",
  "bytes",
  "frame-header",
  "rtrb",
- "rubato 0.14.1",
  "soundkit",
  "soundkit-aac",
- "soundkit-ac3",
- "soundkit-aiff",
- "soundkit-alac",
- "soundkit-amr",
  "soundkit-flac",
- "soundkit-g711",
- "soundkit-g722",
- "soundkit-g726",
- "soundkit-g729",
- "soundkit-gsm",
  "soundkit-mp3",
  "soundkit-ogg-opus",
  "soundkit-opus",
- "soundkit-speex",
- "soundkit-vorbis",
  "soundkit-webm",
 ]
 
 [[package]]
 name = "soundkit-flac"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
+source = "git+https://github.com/wavey-ai/soundkit.git#343e02218d9c7beda86807f178f5388e3f8d4887"
 dependencies = [
- "access-unit 0.1.3",
+ "access-unit 0.1.2",
  "claxon",
  "libc",
  "libflac-sys",
@@ -3297,52 +2853,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "soundkit-g711"
-version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
-dependencies = [
- "soundkit",
-]
-
-[[package]]
-name = "soundkit-g722"
-version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
-dependencies = [
- "ezk-g722",
- "soundkit",
-]
-
-[[package]]
-name = "soundkit-g726"
-version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
-dependencies = [
- "soundkit",
-]
-
-[[package]]
-name = "soundkit-g729"
-version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
-dependencies = [
- "g729-sys",
- "soundkit",
-]
-
-[[package]]
-name = "soundkit-gsm"
-version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
-dependencies = [
- "gsm-sys",
- "soundkit",
-]
-
-[[package]]
 name = "soundkit-mp3"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
+source = "git+https://github.com/wavey-ai/soundkit.git#343e02218d9c7beda86807f178f5388e3f8d4887"
 dependencies = [
  "nanomp3",
  "soundkit",
@@ -3352,7 +2865,7 @@ dependencies = [
 [[package]]
 name = "soundkit-ogg-opus"
 version = "0.0.1"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
+source = "git+https://github.com/wavey-ai/soundkit.git#343e02218d9c7beda86807f178f5388e3f8d4887"
 dependencies = [
  "frame-header",
  "memchr",
@@ -3364,7 +2877,7 @@ dependencies = [
 [[package]]
 name = "soundkit-opus"
 version = "0.0.1"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
+source = "git+https://github.com/wavey-ai/soundkit.git#343e02218d9c7beda86807f178f5388e3f8d4887"
 dependencies = [
  "frame-header",
  "libopus",
@@ -3373,44 +2886,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "soundkit-speex"
-version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
-dependencies = [
- "frame-header",
- "memchr",
- "oxideav-core",
- "oxideav-speex",
- "soundkit",
-]
-
-[[package]]
-name = "soundkit-vorbis"
-version = "0.1.0"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
-dependencies = [
- "frame-header",
- "lewton",
- "memchr",
- "soundkit",
-]
-
-[[package]]
 name = "soundkit-webm"
 version = "0.0.1"
-source = "git+https://github.com/wavey-ai/soundkit.git#905d1bb9aa3b413016332f859099d86e474e5525"
+source = "git+https://github.com/wavey-ai/soundkit.git#343e02218d9c7beda86807f178f5388e3f8d4887"
 dependencies = [
  "frame-header",
  "soundkit",
  "soundkit-opus",
  "tracing",
 ]
-
-[[package]]
-name = "spin"
-version = "0.9.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 
 [[package]]
 name = "stable_deref_trait"
@@ -3465,164 +2949,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "symphonia"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5773a4c030a19d9bfaa090f49746ff35c75dfddfa700df7a5939d5e076a57039"
-dependencies = [
- "lazy_static",
- "symphonia-bundle-flac",
- "symphonia-bundle-mp3",
- "symphonia-codec-aac",
- "symphonia-codec-adpcm",
- "symphonia-codec-pcm",
- "symphonia-codec-vorbis",
- "symphonia-core",
- "symphonia-format-mkv",
- "symphonia-format-ogg",
- "symphonia-format-riff",
- "symphonia-metadata",
-]
-
-[[package]]
-name = "symphonia-bundle-flac"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c91565e180aea25d9b80a910c546802526ffd0072d0b8974e3ebe59b686c9976"
-dependencies = [
- "log",
- "symphonia-core",
- "symphonia-metadata",
- "symphonia-utils-xiph",
-]
-
-[[package]]
-name = "symphonia-bundle-mp3"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4872dd6bb56bf5eac799e3e957aa1981086c3e613b27e0ac23b176054f7c57ed"
-dependencies = [
- "lazy_static",
- "log",
- "symphonia-core",
- "symphonia-metadata",
-]
-
-[[package]]
-name = "symphonia-codec-aac"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c263845aa86881416849c1729a54c7f55164f8b96111dba59de46849e73a790"
-dependencies = [
- "lazy_static",
- "log",
- "symphonia-core",
-]
-
-[[package]]
-name = "symphonia-codec-adpcm"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2dddc50e2bbea4cfe027441eece77c46b9f319748605ab8f3443350129ddd07f"
-dependencies = [
- "log",
- "symphonia-core",
-]
-
-[[package]]
-name = "symphonia-codec-pcm"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e89d716c01541ad3ebe7c91ce4c8d38a7cf266a3f7b2f090b108fb0cb031d95"
-dependencies = [
- "log",
- "symphonia-core",
-]
-
-[[package]]
-name = "symphonia-codec-vorbis"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f025837c309cd69ffef572750b4a2257b59552c5399a5e49707cc5b1b85d1c73"
-dependencies = [
- "log",
- "symphonia-core",
- "symphonia-utils-xiph",
-]
-
-[[package]]
-name = "symphonia-core"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea00cc4f79b7f6bb7ff87eddc065a1066f3a43fe1875979056672c9ef948c2af"
-dependencies = [
- "arrayvec",
- "bitflags 1.3.2",
- "bytemuck",
- "lazy_static",
- "log",
-]
-
-[[package]]
-name = "symphonia-format-mkv"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "122d786d2c43a49beb6f397551b4a050d8229eaa54c7ddf9ee4b98899b8742d0"
-dependencies = [
- "lazy_static",
- "log",
- "symphonia-core",
- "symphonia-metadata",
- "symphonia-utils-xiph",
-]
-
-[[package]]
-name = "symphonia-format-ogg"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b4955c67c1ed3aa8ae8428d04ca8397fbef6a19b2b051e73b5da8b1435639cb"
-dependencies = [
- "log",
- "symphonia-core",
- "symphonia-metadata",
- "symphonia-utils-xiph",
-]
-
-[[package]]
-name = "symphonia-format-riff"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2d7c3df0e7d94efb68401d81906eae73c02b40d5ec1a141962c592d0f11a96f"
-dependencies = [
- "extended",
- "log",
- "symphonia-core",
- "symphonia-metadata",
-]
-
-[[package]]
-name = "symphonia-metadata"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36306ff42b9ffe6e5afc99d49e121e0bd62fe79b9db7b9681d48e29fa19e6b16"
-dependencies = [
- "encoding_rs",
- "lazy_static",
- "log",
- "symphonia-core",
-]
-
-[[package]]
-name = "symphonia-utils-xiph"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee27c85ab799a338446b68eec77abf42e1a6f1bb490656e121c6e27bfbab9f16"
-dependencies = [
- "symphonia-core",
- "symphonia-metadata",
-]
 
 [[package]]
 name = "syn"
@@ -3771,25 +3097,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "time"
-version = "0.3.47"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
-dependencies = [
- "deranged",
- "num-conv",
- "powerfmt",
- "serde_core",
- "time-core",
-]
-
-[[package]]
-name = "time-core"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
-
-[[package]]
 name = "tinystr"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3845,7 +3152,7 @@ dependencies = [
 [[package]]
 name = "tls-helpers"
 version = "0.2.0"
-source = "git+https://github.com/wavey-ai/tls-helpers.git#83ed1898513321379b19f6311045164323212b31"
+source = "git+https://github.com/wavey-ai/tls-helpers.git#87aac4e12378861e37a583520dfa55f925aff840"
 dependencies = [
  "base64",
  "rustls 0.23.40",
@@ -3976,24 +3283,6 @@ dependencies = [
  "tokio",
  "tower-layer",
  "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "tower-http"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e9cd434a998747dd2c4276bc96ee2e0c7a2eadf3cae88e52be55a05fa9053f5"
-dependencies = [
- "bitflags 2.11.1",
- "bytes",
- "http",
- "http-body",
- "http-body-util",
- "pin-project-lite",
- "tower-layer",
- "tower-service",
- "tracing",
 ]
 
 [[package]]
@@ -4032,7 +3321,6 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
- "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
@@ -4175,7 +3463,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 [[package]]
 name = "upload-response"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/web-services.git#c714423c16063c39445e6fba4383dd2fff84a6ee"
+source = "git+https://github.com/wavey-ai/web-services.git#bdfbdde63f989e5a5a645a8565d0d788287bf711"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4195,7 +3483,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite",
  "tracing",
- "web-service 0.1.0 (git+https://github.com/wavey-ai/web-services.git)",
+ "web-service",
 ]
 
 [[package]]
@@ -4391,51 +3679,7 @@ dependencies = [
 [[package]]
 name = "web-service"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/web-services.git?rev=065ccab2d5f4a61ccc0bf7b3e3d32da2759828f4#065ccab2d5f4a61ccc0bf7b3e3d32da2759828f4"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64",
- "bytes",
- "dotenvy",
- "env_logger",
- "futures-util",
- "gen-id 0.3.0 (git+https://github.com/wavey-ai/gen-id.git)",
- "h2",
- "h3",
- "h3-datagram",
- "h3-quinn",
- "h3-webtransport",
- "http",
- "http-body-util",
- "http-pack",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "playlists",
- "quinn",
- "regex",
- "rustls 0.23.40",
- "rustls-pemfile",
- "serde",
- "serde_json",
- "structopt",
- "thiserror 2.0.18",
- "tls-helpers 0.2.0 (git+https://github.com/wavey-ai/tls-helpers.git)",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "url",
- "webpki-roots 0.26.11",
- "xmpegts",
- "xxhash-rust",
-]
-
-[[package]]
-name = "web-service"
-version = "0.1.0"
-source = "git+https://github.com/wavey-ai/web-services.git#c714423c16063c39445e6fba4383dd2fff84a6ee"
+source = "git+https://github.com/wavey-ai/web-services.git#bdfbdde63f989e5a5a645a8565d0d788287bf711"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4623,15 +3867,6 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
-dependencies = [
- "windows-targets",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets",
 ]

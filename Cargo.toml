@@ -3,12 +3,16 @@ name = "media-research-stack"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+description = "Local Apple Silicon stack for public-media research with av-ingest, SoundKit, and Cohere MLX ASR"
+repository = "https://github.com/wavey-ai/media-research-stack"
+readme = "README.md"
+publish = false
 build = "build.rs"
 
 [dependencies]
 anyhow = "1"
-asr-api = { git = "https://github.com/wavey-ai/asr-api.git", default-features = false, features = ["cohere-mlx", "audio-decoder"] }
-av-ingest-proxy = { git = "https://github.com/wavey-ai/av-ingest.git", package = "av-ingest-proxy" }
+asr-api = { git = "https://github.com/wavey-ai/asr-api.git", rev = "ffe647499eefe6b699dcd5dcce9405dfb32dfda2", default-features = false, features = ["cohere-mlx", "audio-decoder"] }
+av-ingest-proxy = { git = "https://github.com/wavey-ai/av-ingest.git", rev = "a43a0d41b5a9f4886dbbce5d02bc491d4eb1ab58", package = "av-ingest-proxy" }
 clap = { version = "4.5", features = ["derive", "env"] }
 tokio = { version = "1.45", features = ["full"] }
 tracing = "0.1"
@@ -23,3 +27,8 @@ bytes = "1"
 futures-util = "0.3"
 http = "1"
 serde_json = "1.0"
+
+# The current GitHub head of playlists has a workspace-relative dependency.
+# Keep the standalone build on the known-good revision used by asr-api.
+[patch."https://github.com/wavey-ai/playlists.git"]
+playlists = { git = "https://codeberg.org/wavey-ai/playlists.git", rev = "a069d9ec7bd97f1b96a6b435541be8304fc680a4" }

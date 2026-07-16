@@ -11,6 +11,7 @@ use futures_util::future;
 use futures_util::StreamExt;
 use http::{header::CONTENT_TYPE, Request, Response, StatusCode};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -29,22 +30,26 @@ const DEFAULT_MASTERING_URLS: &[&str] = &[
     "https://www.youtube.com/watch?v=9VmjOIid2C4",
 ];
 const DEFAULT_UPLOAD_RESPONSE_SLOT_SIZE_KB: usize = 32;
-const DEFAULT_UPLOAD_RESPONSE_RING_BYTES: usize = 1024 * 1024 * 1024;
+const DEFAULT_UPLOAD_RESPONSE_RING_BYTES: usize = 64 * 1024 * 1024;
+const DEFAULT_UPLOAD_RESPONSE_NUM_STREAMS: usize = 2;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn transcribes_audio_mastering_videos() -> Result<()> {
-    if !env_flag("MEDIA_RESEARCH_STACK_MASTERING_BENCH") {
-        eprintln!("skipping long mastering benchmark; set MEDIA_RESEARCH_STACK_MASTERING_BENCH=1");
+    if !env_flag_any(&[
+        "MEDIA_RESEARCH_STACK_BENCH",
+        "MEDIA_RESEARCH_STACK_MASTERING_BENCH",
+    ]) {
+        eprintln!("skipping long research benchmark; set MEDIA_RESEARCH_STACK_BENCH=1");
         return Ok(());
     }
 
     env::set_var("ASR_COHERE_BACKEND", "mlx");
     env::set_var("AV_INGEST_PROXY_RESOLVE_MODE", "transcribe");
+    ensure_mlx_runtime_env()?;
     init_tracing();
-    ensure_mlx_metallib_for_current_exe()?;
 
     let model_dir = PathBuf::from(env::var("ASR_MODEL_DIR").context("ASR_MODEL_DIR is required")?);
-    let urls = mastering_urls()?;
+    let urls = research_urls()?;
     let startup_grace =
         Duration::from_secs(env_u64("MEDIA_RESEARCH_STACK_STARTUP_GRACE_SECS", 20)?);
 
@@ -76,14 +81,31 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
 
     let report_path = report_path()?;
     let progress_path = progress_path()?;
+    let resume = env_flag("MEDIA_RESEARCH_STACK_RESUME");
+    let completed_sources = if resume {
+        completed_sources(&report_path)?
+    } else {
+        HashSet::new()
+    };
     eprintln!("writing benchmark report to {}", report_path.display());
     eprintln!("writing streaming progress to {}", progress_path.display());
 
     let mut completed = 0usize;
+    let mut skipped = 0usize;
     let mut aggregate_audio_seconds = 0.0f64;
     let mut aggregate_wall_seconds = 0.0f64;
 
     for (index, source_url) in urls.iter().enumerate() {
+        if completed_sources.contains(source_url) {
+            skipped += 1;
+            eprintln!(
+                "[{}/{}] already completed; skipping {}",
+                index + 1,
+                urls.len(),
+                source_url
+            );
+            continue;
+        }
         let started_at = Instant::now();
         eprintln!(
             "[{}/{}] opening source {}",
@@ -127,7 +149,7 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
         let transcript_words = transcript.split_whitespace().count();
         assert!(
             transcript_words >= 5,
-            "short transcript for {source_url}: {transcript:?}"
+            "short transcript for {source_url}: {transcript_words} words"
         );
 
         completed += 1;
@@ -135,6 +157,7 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
         aggregate_wall_seconds += wall_seconds;
 
         let record = json!({
+            "status": "ok",
             "index": index,
             "source_url": source_url,
             "audio_seconds": audio_seconds,
@@ -162,11 +185,11 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
         );
     }
 
-    assert_eq!(completed, urls.len());
+    assert_eq!(completed + skipped, urls.len());
     let aggregate_rtfx = aggregate_audio_seconds / aggregate_wall_seconds.max(0.001);
     eprintln!(
-        "mastering benchmark complete: {:.1}s audio in {:.1}s wall = {:.2} aggregate RTFx",
-        aggregate_audio_seconds, aggregate_wall_seconds, aggregate_rtfx
+        "research benchmark complete: {} processed, {} resumed, {:.1}s audio in {:.1}s wall = {:.2} aggregate RTFx",
+        completed, skipped, aggregate_audio_seconds, aggregate_wall_seconds, aggregate_rtfx
     );
     Ok(())
 }
@@ -246,7 +269,10 @@ impl LocalAsrHarness {
         let content_type = header_string(&audio, CONTENT_TYPE.as_str())
             .or_else(|| audio.mime_type.clone())
             .unwrap_or_else(|| "application/octet-stream".to_string());
-        let listen_uri = if env_flag("MEDIA_RESEARCH_STACK_MASTERING_INTERIM") {
+        let listen_uri = if env_flag_any(&[
+            "MEDIA_RESEARCH_STACK_INTERIM",
+            "MEDIA_RESEARCH_STACK_MASTERING_INTERIM",
+        ]) {
             "/v1/listen?utterances=true&paragraphs=true&timestamps=true&interim_results=true&language=en_US"
         } else {
             "/v1/listen?utterances=true&paragraphs=true&timestamps=true&language=en_US"
@@ -332,6 +358,8 @@ struct ProgressStreamWriter {
     source_index: usize,
     source_url: String,
     status: Option<StatusCode>,
+    store_transcripts: bool,
+    log_transcript_previews: bool,
 }
 
 #[derive(Default)]
@@ -362,6 +390,11 @@ impl ProgressStreamWriter {
             source_index,
             source_url,
             status: None,
+            store_transcripts: env_flag("MEDIA_RESEARCH_STACK_STORE_TRANSCRIPTS"),
+            log_transcript_previews: env_flag_any(&[
+                "MEDIA_RESEARCH_STACK_LOG_TRANSCRIPT_PREVIEWS",
+                "MEDIA_RESEARCH_STACK_LOG_TRANSCRIPTS",
+            ]),
         })
     }
 
@@ -389,13 +422,14 @@ impl ProgressStreamWriter {
             json!({
                 "type": "ParseError",
                 "error": error.to_string(),
-                "raw": String::from_utf8_lossy(line),
+                "raw_bytes": line.len(),
             })
         });
+        let persisted_event = progress_event(&event, self.store_transcripts);
         let wrapped = json!({
             "source_index": self.source_index,
             "source_url": self.source_url,
-            "event": event.clone(),
+            "event": persisted_event,
         });
         self.write_progress_value(&wrapped)?;
 
@@ -459,13 +493,24 @@ impl ProgressStreamWriter {
                     .get("duration")
                     .and_then(Value::as_f64)
                     .unwrap_or(start);
-                eprintln!(
-                    "[{}] ASR {label} {:.1}-{:.1}s: {}",
-                    self.source_index + 1,
-                    start,
-                    duration,
-                    transcript_preview(transcript)
-                );
+                if self.log_transcript_previews {
+                    eprintln!(
+                        "[{}] ASR {label} {:.1}-{:.1}s: {}",
+                        self.source_index + 1,
+                        start,
+                        duration,
+                        transcript_preview(transcript)
+                    );
+                } else {
+                    eprintln!(
+                        "[{}] ASR {label} {:.1}-{:.1}s: {} chars, {} words",
+                        self.source_index + 1,
+                        start,
+                        duration,
+                        transcript.chars().count(),
+                        transcript.split_whitespace().count()
+                    );
+                }
             }
             _ => {}
         }
@@ -572,6 +617,37 @@ impl ProgressCollector {
     }
 }
 
+fn progress_event(event: &Value, store_transcripts: bool) -> Value {
+    if store_transcripts {
+        return event.clone();
+    }
+
+    let mut redacted = event.clone();
+    if let Some(alternative) = redacted
+        .pointer_mut("/channel/alternatives/0")
+        .and_then(Value::as_object_mut)
+    {
+        let transcript = alternative
+            .remove("transcript")
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .unwrap_or_default();
+        let word_count = alternative
+            .remove("words")
+            .and_then(|value| value.as_array().map(Vec::len))
+            .unwrap_or_else(|| transcript.split_whitespace().count());
+        alternative.remove("paragraphs");
+        alternative.insert(
+            "transcript_chars".to_string(),
+            Value::from(transcript.chars().count()),
+        );
+        alternative.insert("transcript_words".to_string(), Value::from(word_count));
+    }
+    if let Some(object) = redacted.as_object_mut() {
+        object.remove("utterances");
+    }
+    redacted
+}
+
 fn trim_ascii(line: &[u8]) -> &[u8] {
     let start = line
         .iter()
@@ -611,50 +687,126 @@ fn header_u64(audio: &TranscribeAudioStream, name: &str) -> Option<u64> {
     header_string(audio, name)?.parse().ok()
 }
 
-fn mastering_urls() -> Result<Vec<String>> {
-    let urls = env::var("MEDIA_RESEARCH_STACK_MASTERING_URLS")
-        .ok()
-        .map(|value| {
-            value
-                .split(|ch: char| ch == ',' || ch.is_whitespace())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_else(|| {
-            DEFAULT_MASTERING_URLS
-                .iter()
-                .map(|url| url.to_string())
-                .collect()
-        });
+fn research_urls() -> Result<Vec<String>> {
+    let urls = if let Some(path) = first_env(&["MEDIA_RESEARCH_STACK_URLS_FILE"]) {
+        urls_from_file(Path::new(&path))?
+    } else if let Some(value) = first_env(&[
+        "MEDIA_RESEARCH_STACK_URLS",
+        "MEDIA_RESEARCH_STACK_MASTERING_URLS",
+    ]) {
+        split_urls(&value)
+    } else {
+        DEFAULT_MASTERING_URLS
+            .iter()
+            .map(|url| url.to_string())
+            .collect()
+    };
 
-    if urls.len() < 2 {
-        bail!("mastering benchmark requires at least two source URLs");
-    }
+    anyhow::ensure!(
+        !urls.is_empty(),
+        "research run requires at least one source URL"
+    );
     Ok(urls)
 }
 
+fn urls_from_file(path: &Path) -> Result<Vec<String>> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read source URL file {}", path.display()))?;
+    let trimmed = contents.trim();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        let value: Value = serde_json::from_str(trimmed)
+            .with_context(|| format!("failed to parse source URL file {}", path.display()))?;
+        let entries = value
+            .get("videos")
+            .and_then(Value::as_array)
+            .or_else(|| value.as_array())
+            .ok_or_else(|| anyhow!("JSON URL file must be an array or contain a videos array"))?;
+        return entries
+            .iter()
+            .map(|entry| {
+                entry
+                    .as_str()
+                    .or_else(|| entry.get("url").and_then(Value::as_str))
+                    .map(ToOwned::to_owned)
+                    .ok_or_else(|| anyhow!("JSON URL entry must be a string or contain a url"))
+            })
+            .collect();
+    }
+
+    Ok(contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .flat_map(split_urls)
+        .collect())
+}
+
+fn split_urls(value: &str) -> Vec<String> {
+    value
+        .split(|ch: char| ch == ',' || ch.is_whitespace())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 fn report_path() -> Result<PathBuf> {
-    let path = env::var("MEDIA_RESEARCH_STACK_MASTERING_REPORT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("target/mastering-videos/report.jsonl"));
+    let path = first_env(&[
+        "MEDIA_RESEARCH_STACK_REPORT",
+        "MEDIA_RESEARCH_STACK_MASTERING_REPORT",
+    ])
+    .map(PathBuf::from)
+    .unwrap_or_else(|| PathBuf::from("target/research/report.jsonl"));
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let _ = fs::remove_file(&path);
+    if !env_flag("MEDIA_RESEARCH_STACK_RESUME") {
+        let _ = fs::remove_file(&path);
+    }
     Ok(path)
 }
 
 fn progress_path() -> Result<PathBuf> {
-    let path = env::var("MEDIA_RESEARCH_STACK_MASTERING_PROGRESS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("target/mastering-videos/progress.ndjson"));
+    let path = first_env(&[
+        "MEDIA_RESEARCH_STACK_PROGRESS",
+        "MEDIA_RESEARCH_STACK_MASTERING_PROGRESS",
+    ])
+    .map(PathBuf::from)
+    .unwrap_or_else(|| PathBuf::from("target/research/progress.ndjson"));
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let _ = fs::remove_file(&path);
+    if !env_flag("MEDIA_RESEARCH_STACK_RESUME") {
+        let _ = fs::remove_file(&path);
+    }
     Ok(path)
+}
+
+fn completed_sources(path: &Path) -> Result<HashSet<String>> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut completed = HashSet::new();
+    for (index, line) in contents.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(line)
+            .with_context(|| format!("invalid report JSON on line {}", index + 1))?;
+        if value
+            .get("status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| status != "ok")
+        {
+            continue;
+        }
+        if let Some(source_url) = value.get("source_url").and_then(Value::as_str) {
+            completed.insert(source_url.to_string());
+        }
+    }
+    Ok(completed)
 }
 
 fn append_json_line(path: &Path, value: &Value) -> Result<()> {
@@ -667,6 +819,16 @@ fn env_flag(name: &str) -> bool {
     env::var(name)
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
+}
+
+fn env_flag_any(names: &[&str]) -> bool {
+    names.iter().any(|name| env_flag(name))
+}
+
+fn first_env(names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .find_map(|name| env::var(name).ok().filter(|value| !value.trim().is_empty()))
 }
 
 fn init_tracing() {
@@ -690,32 +852,42 @@ fn env_u64(name: &str, default: u64) -> Result<u64> {
         .map(|value| value.unwrap_or(default))
 }
 
-fn ensure_mlx_metallib_for_current_exe() -> Result<()> {
-    let exe = env::current_exe().context("failed to locate current test executable")?;
-    let exe_dir = exe
-        .parent()
-        .ok_or_else(|| anyhow!("test executable has no parent directory"))?;
-    let target_dir = exe_dir
-        .parent()
-        .filter(|_| exe_dir.file_name().is_some_and(|name| name == "deps"))
-        .unwrap_or(exe_dir);
-    let source = target_dir.join("mlx.metallib");
-    let dest = exe_dir.join("mlx.metallib");
-    if dest.is_file() {
-        return Ok(());
-    }
+fn ensure_mlx_runtime_env() -> Result<()> {
+    let runtime = if let Some(path) = first_env(&["ASR_MLX_TRANSCRIBE_BIN"]) {
+        PathBuf::from(path)
+    } else {
+        env::current_dir()
+            .context("failed to resolve current directory")?
+            .join("../asr-api/apple/.build/release/asr-mlx-transcribe")
+    };
     anyhow::ensure!(
-        source.is_file(),
-        "MLX metallib not found at {}; build the MLX target first",
-        source.display()
+        runtime.is_file(),
+        "Cohere MLX runtime was not found. Build it with `swift build -c release --package-path ../asr-api/apple`, then set ASR_MLX_TRANSCRIBE_BIN."
     );
-    fs::copy(&source, &dest).with_context(|| {
-        format!(
-            "failed to copy MLX metallib from {} to {}",
-            source.display(),
-            dest.display()
-        )
-    })?;
+    let runtime_dir = runtime
+        .parent()
+        .ok_or_else(|| anyhow!("Cohere MLX runtime has no parent directory"))?;
+    let destination = runtime_dir.join("mlx.metallib");
+    if !destination.is_file() {
+        let build_dir = runtime_dir
+            .parent()
+            .ok_or_else(|| anyhow!("Cohere MLX runtime is not inside a Swift build directory"))?;
+        let source = [
+            build_dir.join("mlx-metal/mlx.metallib"),
+            build_dir.join("arm64-apple-macosx/debug/mlx.metallib"),
+        ]
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| anyhow!("MLX Metal library was not produced by the Swift build"))?;
+        fs::copy(&source, &destination).with_context(|| {
+            format!(
+                "failed to copy MLX metallib from {} to {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+    }
+    env::set_var("ASR_MLX_TRANSCRIBE_BIN", runtime);
     Ok(())
 }
 
@@ -747,25 +919,36 @@ fn asr_config(role: AppRole, worker_id: &str, model_dir: Option<PathBuf>) -> Res
         model_provider: AsrModelProvider::Cohere,
         device_ids: Vec::new(),
         onnx_sessions: 1,
-        cohere_max_new_tokens: env::var("MEDIA_RESEARCH_STACK_MASTERING_MAX_NEW_TOKENS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(384),
+        cohere_max_new_tokens: first_env(&[
+            "ASR_COHERE_MAX_NEW_TOKENS",
+            "MEDIA_RESEARCH_STACK_MASTERING_MAX_NEW_TOKENS",
+        ])
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(128),
         chunk_seconds: 30.0,
         overlap_seconds: 2.0,
         final_min_seconds: 0.5,
         utt_split_seconds: 0.8,
-        upload_response_num_streams: 16,
+        upload_response_num_streams: env_usize(
+            "UPLOAD_RESPONSE_NUM_STREAMS",
+            DEFAULT_UPLOAD_RESPONSE_NUM_STREAMS,
+        )?,
         upload_response_slot_size_kb,
         upload_response_slots_per_stream,
-        upload_response_timeout_ms: env_u64(
+        upload_response_timeout_ms: first_env(&[
+            "UPLOAD_RESPONSE_TIMEOUT_MS",
             "MEDIA_RESEARCH_STACK_MASTERING_REQUEST_TIMEOUT_MS",
-            6 * 60 * 60 * 1_000,
-        )
+        ])
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .context("invalid upload response timeout")
+        })
+        .transpose()?
         .unwrap_or(6 * 60 * 60 * 1_000),
         upload_response_watch_poll_ms: 1,
         upload_response_worker_poll_ms: 2,
-        upload_response_max_inflight: 2,
+        upload_response_max_inflight: env_usize("UPLOAD_RESPONSE_MAX_INFLIGHT", 1)?,
         upload_response_worker_id: worker_id.to_string(),
         upload_response_ingress_urls: Vec::new(),
         upload_response_discovery_dns: None,
@@ -795,4 +978,62 @@ fn env_optional_usize(name: &str) -> Result<Option<usize>> {
 
 fn env_usize(name: &str, default: usize) -> Result<usize> {
     env_optional_usize(name).map(|value| value.unwrap_or(default))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_url_lists_on_commas_and_whitespace() {
+        assert_eq!(
+            split_urls("https://example.com/a, https://example.com/b\nhttps://example.com/c"),
+            vec![
+                "https://example.com/a",
+                "https://example.com/b",
+                "https://example.com/c"
+            ]
+        );
+    }
+
+    #[test]
+    fn redacts_transcript_text_from_progress_by_default() {
+        let event = json!({
+            "type": "Results",
+            "channel": {
+                "alternatives": [{
+                    "transcript": "one two three",
+                    "words": [{"word": "one"}, {"word": "two"}, {"word": "three"}],
+                    "paragraphs": {"transcript": "one two three"}
+                }]
+            },
+            "utterances": [{"transcript": "one two three"}]
+        });
+
+        let redacted = progress_event(&event, false);
+        let alternative = redacted
+            .pointer("/channel/alternatives/0")
+            .and_then(Value::as_object)
+            .unwrap();
+        assert!(!alternative.contains_key("transcript"));
+        assert!(!alternative.contains_key("words"));
+        assert!(!alternative.contains_key("paragraphs"));
+        assert_eq!(alternative.get("transcript_chars"), Some(&Value::from(13)));
+        assert_eq!(alternative.get("transcript_words"), Some(&Value::from(3)));
+        assert!(redacted.get("utterances").is_none());
+    }
+
+    #[test]
+    fn preserves_transcript_text_when_explicitly_enabled() {
+        let event = json!({
+            "type": "Results",
+            "channel": {"alternatives": [{"transcript": "owned recording"}]}
+        });
+        assert_eq!(progress_event(&event, true), event);
+    }
+
+    #[test]
+    fn ring_size_rounds_up_to_whole_slots() {
+        assert_eq!(slots_for_ring_bytes(65_537, 32_768), 3);
+    }
 }

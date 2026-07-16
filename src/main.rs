@@ -9,8 +9,9 @@ use clap::Parser;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
+use std::fs;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
@@ -19,7 +20,8 @@ use tracing_subscriber::EnvFilter;
 use upload_response::{ResponseWatcher, UploadResponseRouter, UploadResponseService};
 use web_service::{H2H3Server, Server, ServerBuilder};
 
-const DEFAULT_UPLOAD_RESPONSE_RING_BYTES: usize = 1024 * 1024 * 1024;
+const DEFAULT_UPLOAD_RESPONSE_RING_BYTES: usize = 64 * 1024 * 1024;
+const DEFAULT_UPLOAD_RESPONSE_NUM_STREAMS: usize = 2;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -29,6 +31,9 @@ const DEFAULT_UPLOAD_RESPONSE_RING_BYTES: usize = 1024 * 1024 * 1024;
 struct Config {
     #[arg(long, env = "ASR_MODEL_DIR")]
     model_dir: PathBuf,
+
+    #[arg(long, env = "ASR_MLX_TRANSCRIBE_BIN")]
+    mlx_transcribe_bin: Option<PathBuf>,
 
     #[arg(long, env = "AV_INGEST_PROXY_PORT", default_value_t = 8444)]
     av_port: u16,
@@ -46,7 +51,7 @@ struct Config {
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     rust_log: String,
 
-    #[arg(long, env = "ASR_COHERE_MAX_NEW_TOKENS", default_value_t = 384)]
+    #[arg(long, env = "ASR_COHERE_MAX_NEW_TOKENS", default_value_t = 128)]
     cohere_max_new_tokens: usize,
 
     #[arg(long, env = "CHUNK_SECONDS", default_value_t = 30.0)]
@@ -61,7 +66,11 @@ struct Config {
     #[arg(long, env = "UTT_SPLIT_SECONDS", default_value_t = 0.8)]
     utt_split_seconds: f64,
 
-    #[arg(long, env = "UPLOAD_RESPONSE_NUM_STREAMS", default_value_t = 16)]
+    #[arg(
+        long,
+        env = "UPLOAD_RESPONSE_NUM_STREAMS",
+        default_value_t = DEFAULT_UPLOAD_RESPONSE_NUM_STREAMS
+    )]
     upload_response_num_streams: usize,
 
     #[arg(long, env = "UPLOAD_RESPONSE_SLOT_SIZE_KB", default_value_t = 32)]
@@ -81,11 +90,18 @@ struct Config {
     )]
     upload_response_slots_per_stream: Option<usize>,
 
-    #[arg(long, env = "UPLOAD_RESPONSE_TIMEOUT_MS", default_value_t = 30_000)]
+    #[arg(long, env = "UPLOAD_RESPONSE_TIMEOUT_MS", default_value_t = 300_000)]
     upload_response_timeout_ms: u64,
 
-    #[arg(long, env = "UPLOAD_RESPONSE_MAX_INFLIGHT", default_value_t = 2)]
+    #[arg(long, env = "UPLOAD_RESPONSE_MAX_INFLIGHT", default_value_t = 1)]
     upload_response_max_inflight: usize,
+
+    #[arg(
+        long,
+        env = "MEDIA_RESEARCH_STACK_LOG_TRANSCRIPTS",
+        default_value_t = false
+    )]
+    log_transcripts: bool,
 }
 
 impl Config {
@@ -110,6 +126,22 @@ impl Config {
         self.upload_response_slots_per_stream()
             .saturating_mul(self.upload_response_slot_bytes())
     }
+
+    fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.av_port != self.asr_ingress_port,
+            "av-ingest and ASR must use different ports"
+        );
+        anyhow::ensure!(
+            self.upload_response_num_streams > 0,
+            "UPLOAD_RESPONSE_NUM_STREAMS must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.upload_response_max_inflight > 0,
+            "UPLOAD_RESPONSE_MAX_INFLIGHT must be greater than zero"
+        );
+        Ok(())
+    }
 }
 
 fn slots_for_ring_bytes(ring_bytes: usize, slot_bytes: usize) -> usize {
@@ -120,8 +152,9 @@ fn slots_for_ring_bytes(ring_bytes: usize, slot_bytes: usize) -> usize {
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = Config::parse();
+    config.validate()?;
     init_tracing(&config.rust_log)?;
-    configure_process_env(&config);
+    configure_process_env(&config)?;
 
     let (tx, mut rx) = mpsc::channel::<ServiceExit>(8);
 
@@ -162,11 +195,83 @@ fn init_tracing(rust_log: &str) -> Result<()> {
         .map_err(|error| anyhow::anyhow!("failed to initialize tracing: {error}"))
 }
 
-fn configure_process_env(config: &Config) {
+fn configure_process_env(config: &Config) -> Result<()> {
+    let mlx_transcribe_bin = resolve_mlx_transcribe_bin(config)?;
+    ensure_mlx_metallib(&mlx_transcribe_bin)?;
     env::set_var("ASR_COHERE_BACKEND", "mlx");
+    env::set_var("ASR_MLX_TRANSCRIBE_BIN", &mlx_transcribe_bin);
     env::set_var("AV_INGEST_PROXY_LOCAL_HTTP", "1");
     env::set_var("AV_INGEST_PROXY_PORT", config.av_port.to_string());
     env::set_var("AV_INGEST_PROXY_RESOLVE_MODE", &config.av_resolve_mode);
+    info!(
+        mlx_transcribe_bin = %mlx_transcribe_bin.display(),
+        "using Cohere MLX runtime"
+    );
+    Ok(())
+}
+
+fn ensure_mlx_metallib(runtime: &Path) -> Result<()> {
+    let runtime_dir = runtime
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Cohere MLX runtime has no parent directory"))?;
+    let destination = runtime_dir.join("mlx.metallib");
+    if destination.is_file() {
+        return Ok(());
+    }
+
+    let build_dir = runtime_dir.parent().ok_or_else(|| {
+        anyhow::anyhow!("Cohere MLX runtime is not inside a Swift build directory")
+    })?;
+    let candidates = [
+        build_dir.join("mlx-metal/mlx.metallib"),
+        build_dir.join("arm64-apple-macosx/debug/mlx.metallib"),
+    ];
+    let source = candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "MLX Metal library was not found. Rebuild the runtime with `swift build -c release --package-path ../asr-api/apple`."
+            )
+        })?;
+    fs::copy(&source, &destination).with_context(|| {
+        format!(
+            "failed to install MLX Metal library from {} to {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    info!(
+        source = %source.display(),
+        destination = %destination.display(),
+        "installed MLX Metal library"
+    );
+    Ok(())
+}
+
+fn resolve_mlx_transcribe_bin(config: &Config) -> Result<PathBuf> {
+    if let Some(path) = &config.mlx_transcribe_bin {
+        anyhow::ensure!(
+            path.is_file(),
+            "Cohere MLX runtime does not exist: {}",
+            path.display()
+        );
+        return Ok(path.clone());
+    }
+
+    let current_dir = env::current_dir().context("failed to resolve current directory")?;
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let candidates = [
+        current_dir.join("../asr-api/apple/.build/release/asr-mlx-transcribe"),
+        manifest_dir.join("../asr-api/apple/.build/release/asr-mlx-transcribe"),
+    ];
+    if let Some(path) = candidates.into_iter().find(|path| path.is_file()) {
+        return Ok(path);
+    }
+
+    anyhow::bail!(
+        "Cohere MLX runtime was not found. Build it with `swift build -c release --package-path ../asr-api/apple`, then set ASR_MLX_TRANSCRIBE_BIN to the resulting asr-mlx-transcribe binary."
+    )
 }
 
 async fn run_local_asr(config: Config) -> Result<()> {
@@ -203,10 +308,12 @@ async fn run_local_asr(config: Config) -> Result<()> {
     let _watcher_handle = ResponseWatcher::new(upload_service.clone())
         .with_poll_interval_ms(ingress_config.upload_response_watch_poll_ms)
         .spawn();
-    let _transcript_handle = spawn_transcript_watcher(
-        upload_service.clone(),
-        ingress_config.upload_response_watch_poll_ms,
-    );
+    let _transcript_handle = config.log_transcripts.then(|| {
+        spawn_transcript_watcher(
+            upload_service.clone(),
+            ingress_config.upload_response_watch_poll_ms,
+        )
+    });
     let _decoder_handle =
         Arc::new(DecoderState::new(decoder_config)).spawn_cache_worker(upload_service.clone());
 
