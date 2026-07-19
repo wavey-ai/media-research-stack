@@ -190,6 +190,7 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
                 Err(error) if continue_on_error => {
                     failed += 1;
                     let wall_seconds = started_at.elapsed().as_secs_f64();
+                    let error_message = format!("{error:#}");
                     append_json_line(
                         &report_path,
                         &json!({
@@ -197,9 +198,14 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
                             "index": index,
                             "source_url": source_url,
                             "wall_seconds": wall_seconds,
-                            "error": format!("{error:#}"),
+                            "error": error_message,
                         }),
                     )?;
+                    if is_systemic_youtube_auth_error(&error_message) {
+                        bail!(
+                            "YouTube rejected the audio-download session; stopping the sweep instead of retrying every source. Set AV_INGEST_PROXY_YTDLP_COOKIES to a readable Netscape cookies file or AV_INGEST_PROXY_YTDLP_COOKIES_FROM_BROWSER to a logged-in browser, verify one URL with yt-dlp, and resume the existing report. Original error: {error_message}"
+                        );
+                    }
                     eprintln!(
                         "[{}/{}] source failed after {:.1}s; continuing: {:#}",
                         index + 1,
@@ -1116,6 +1122,13 @@ fn append_json_line(path: &Path, value: &Value) -> Result<()> {
     Ok(())
 }
 
+fn is_systemic_youtube_auth_error(error: &str) -> bool {
+    error.contains("Sign in to confirm you’re not a bot")
+        || error.contains("Sign in to confirm you're not a bot")
+        || error.contains("cannot decrypt v10 cookies")
+        || error.contains("find-generic-password failed")
+}
+
 fn env_flag(name: &str) -> bool {
     env::var(name)
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -1336,6 +1349,19 @@ mod tests {
     #[test]
     fn ring_size_rounds_up_to_whole_slots() {
         assert_eq!(slots_for_ring_bytes(65_537, 32_768), 3);
+    }
+
+    #[test]
+    fn recognizes_systemic_youtube_auth_failures() {
+        assert!(is_systemic_youtube_auth_error(
+            "ERROR: [youtube] id: Sign in to confirm you’re not a bot"
+        ));
+        assert!(is_systemic_youtube_auth_error(
+            "WARNING: cannot decrypt v10 cookies: no key found"
+        ));
+        assert!(!is_systemic_youtube_auth_error(
+            "ERROR: [youtube] id: Video unavailable"
+        ));
     }
 
     #[test]

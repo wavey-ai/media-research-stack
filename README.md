@@ -203,6 +203,16 @@ loads a separate model copy.
 YouTube authentication, cookies, visitor data, and PO-token settings use the
 standard `AV_INGEST_PROXY_YTDLP_*` and `AV_INGEST_PROXY_YOUTUBE_*` environment
 variables documented by [`av-ingest`](https://github.com/wavey-ai/av-ingest).
+For example, pass a Netscape-format cookie export without committing it:
+
+```bash
+AV_INGEST_PROXY_YTDLP_COOKIES=/absolute/path/to/youtube-cookies.txt \
+  cargo test --locked --release --test mastering_videos -- --nocapture
+```
+
+Verify the same cookie source with one URL before a channel-sized run. The
+research sweep treats YouTube's bot-confirmation response as a systemic
+authentication failure and stops immediately instead of attempting every URL.
 
 ## Development checks
 
