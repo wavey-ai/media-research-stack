@@ -6,18 +6,18 @@ transcripts, progress logs, and ASR timing data.
 
 It can:
 
-- resolve public media with [`av-ingest`](https://github.com/wavey-ai/av-ingest);
+- resolve public media with [`av-ingest`](https://github.com/wavey-ai/av-ingest)
 - decode compressed audio with [SoundKit](https://github.com/wavey-ai/soundkit)
-  as bytes arrive;
-- run Cohere Transcribe through the local MLX runtime on Apple Silicon; and
+  as bytes arrive
+- run Cohere Transcribe through the local MLX runtime on Apple Silicon
 - serve a Deepgram-compatible `/v1/listen` endpoint for clients that need the
   same ASR surface.
 
 For channel research, [`av-ingest`](https://github.com/wavey-ai/av-ingest)
-selects a source audio format, [SoundKit](https://github.com/wavey-ai/soundkit)
-incrementally decodes formats such as WebM/Opus to mono 16 kHz PCM, and
+selects a source audio format. [SoundKit](https://github.com/wavey-ai/soundkit)
+decodes formats such as WebM/Opus to mono 16 kHz PCM as bytes arrive.
 [`asr-api`](https://github.com/wavey-ai/asr-api) transcribes 30-second windows
-with two seconds of overlap.
+with a two-second overlap.
 
 ## Platform and requirements
 
@@ -102,7 +102,7 @@ curl --http2 -k -fsS \
 ```
 
 The endpoint also accepts streaming HTTP request bodies and WebSockets. WAV,
-MP3, FLAC, AAC, Ogg/Opus, and WebM/Opus are decoded by SoundKit; WebM/Opus is
+MP3, FLAC, AAC, Ogg/Opus, and WebM/Opus are decoded by SoundKit. WebM/Opus is
 preferred for YouTube research because it can produce PCM before end-of-file.
 
 ## Build a channel manifest
@@ -148,21 +148,21 @@ names remain supported as compatibility aliases.
 
 `report.jsonl` contains one row per completed source:
 
-- source URL and selected resolver/format metadata;
-- media and wall-clock duration;
-- observed RTFx; and
+- source URL and selected resolver/format metadata
+- media and wall-clock duration
+- observed RTFx
 - transcript character and word counts.
 
 `progress.ndjson` records response status, timestamps, and transcript sizes.
 Transcript and word text are written only when transcript storage is enabled.
 For public-media research, keep manifests, measurements, tags, term counts, and
-summaries as the durable artifacts unless full transcript retention is
-appropriate for the sources you are working with.
+summaries as the durable artifacts. Retain full transcripts only when this is
+appropriate for your sources.
 
 For recordings you own or are authorized to reproduce, set
-`MEDIA_RESEARCH_STACK_STORE_TRANSCRIPTS=1` to retain full ASR events and set
-`MEDIA_RESEARCH_STACK_TRANSCRIPTS_DIR` to write one clean UTF-8 transcript per
-completed source. Transcript files are published atomically and their paths are
+`MEDIA_RESEARCH_STACK_STORE_TRANSCRIPTS=1` to retain full ASR events. Set
+`MEDIA_RESEARCH_STACK_TRANSCRIPTS_DIR` to write one UTF-8 transcript for each
+completed source. Transcript files are published atomically, and their paths are
 recorded in `report.jsonl`. Set
 `MEDIA_RESEARCH_STACK_LOG_TRANSCRIPT_PREVIEWS=1` only when transcript text is
 appropriate in local logs.
@@ -178,8 +178,8 @@ report and skips them, so a long sweep can be restarted safely.
 
 Set `MEDIA_RESEARCH_STACK_CONTINUE_ON_ERROR=1` for channel-sized jobs. A failed
 source is recorded in the report and the remaining sources continue. The run
-still exits unsuccessfully after the sweep when any source failed, so a
-supervisor can restart it with resume enabled and retry only incomplete work.
+still exits unsuccessfully after the sweep when a source fails. A supervisor can
+restart it with resume enabled and retry only incomplete work.
 
 ## Runtime tuning
 
