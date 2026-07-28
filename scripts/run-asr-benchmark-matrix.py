@@ -37,6 +37,7 @@ RECORDED_RUNTIME_SETTINGS = (
     "ASR_COHERE_TRT_COMPONENTS",
     "ASR_COHERE_TRT_FP16",
     "ASR_COHERE_TRT_PROFILE_MAX_S",
+    "ASR_COHERE_TRT_PROFILE_MIN_FRAMES",
     "ASR_COHERE_TRT_PROFILE_MIN_S",
     "ASR_COHERE_TRT_PROFILE_OPT_S",
     "ASR_COHERE_TRT_WORKSPACE_BYTES",
@@ -228,6 +229,7 @@ def run_environment(
     transcripts_dir: pathlib.Path,
 ) -> dict[str, str]:
     environment = os.environ.copy()
+    cache_mime_type = dataset_cache_mime_type(args.dataset_dir)
     environment.update(
         {
             "MEDIA_RESEARCH_STACK_BENCH": "1",
@@ -238,7 +240,7 @@ def run_environment(
                 (args.dataset_dir / "media").resolve()
             ),
             "MEDIA_RESEARCH_STACK_REQUIRE_CACHE": "1",
-            "MEDIA_RESEARCH_STACK_CACHE_MIME_TYPE": "audio/webm",
+            "MEDIA_RESEARCH_STACK_CACHE_MIME_TYPE": cache_mime_type,
             "MEDIA_RESEARCH_STACK_REPORT": str(report_path.resolve()),
             "MEDIA_RESEARCH_STACK_PROGRESS": str(progress_path.resolve()),
             "MEDIA_RESEARCH_STACK_TRANSCRIPTS_DIR": str(transcripts_dir.resolve()),
@@ -272,6 +274,7 @@ def run_environment(
                 "ASR_COHERE_TRT_COMPONENTS": "all",
                 "ASR_COHERE_TRT_CACHE_DIR": str(args.trt_cache_dir.resolve()),
                 "ASR_COHERE_TRT_FP16": "true",
+                "ASR_COHERE_TRT_PROFILE_MIN_FRAMES": "20",
                 "ASR_COHERE_TRT_PROFILE_MIN_S": "1",
                 "ASR_COHERE_TRT_PROFILE_OPT_S": "30",
                 "ASR_COHERE_TRT_PROFILE_MAX_S": "35",
@@ -280,6 +283,16 @@ def run_environment(
     elif args.execution_provider == "cuda":
         environment["ASR_COHERE_TRT_COMPONENTS"] = "none"
     return environment
+
+
+def dataset_cache_mime_type(dataset_dir: pathlib.Path) -> str:
+    media_dir = dataset_dir / "media"
+    for path in sorted(media_dir.glob("*.json")):
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+        value = metadata.get("source_mime_type") or metadata.get("content_type")
+        if isinstance(value, str) and value.strip():
+            return value.split(";", 1)[0].strip().lower()
+    raise ValueError(f"no cache metadata found in {media_dir}")
 
 
 def start_gpu_monitor(path: pathlib.Path) -> tuple[subprocess.Popen[str] | None, TextIO | None]:

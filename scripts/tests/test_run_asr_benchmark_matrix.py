@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import pathlib
 import sys
+import tempfile
 import unittest
 
 
@@ -52,6 +54,26 @@ class BenchmarkMetadataTests(unittest.TestCase):
             settings["ASR_COHERE_TIMESTAMP_BACKEND"],
             "parakeet-ctc-direct",
         )
+
+    def test_reads_the_dataset_cache_mime_type(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            media_dir = pathlib.Path(directory) / "media"
+            media_dir.mkdir()
+            (media_dir / "0001-source.json").write_text(
+                json.dumps(
+                    {
+                        "content_type": (
+                            "audio/x-raw; format=S16LE; rate=16000; channels=1"
+                        )
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                RUNNER.dataset_cache_mime_type(pathlib.Path(directory)),
+                "audio/x-raw",
+            )
 
 
 if __name__ == "__main__":

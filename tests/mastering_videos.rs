@@ -552,14 +552,17 @@ impl LocalAsrHarness {
             .clone()
             .or_else(|| audio.metadata.source_mime_type.clone())
             .unwrap_or_else(|| "application/octet-stream".to_string());
-        let listen_uri = if env_flag_any(&[
+        let mut listen_uri = if env_flag_any(&[
             "MEDIA_RESEARCH_STACK_INTERIM",
             "MEDIA_RESEARCH_STACK_MASTERING_INTERIM",
         ]) {
-            "/v1/listen?utterances=true&paragraphs=true&timestamps=true&interim_results=true&language=en_US"
+            "/v1/listen?utterances=true&paragraphs=true&timestamps=true&interim_results=true&language=en_US".to_string()
         } else {
-            "/v1/listen?utterances=true&paragraphs=true&timestamps=true&language=en_US"
+            "/v1/listen?utterances=true&paragraphs=true&timestamps=true&language=en_US".to_string()
         };
+        if is_s16le_16khz_mono(&content_type) {
+            listen_uri.push_str("&encoding=linear16&sample_rate=16000&channels=1");
+        }
         let req = Request::builder()
             .method("POST")
             .uri(listen_uri)
@@ -616,6 +619,20 @@ async fn open_research_audio(
     let metadata = source_metadata(&audio, source_url)?;
     let body = body_stream_from_audio(audio, source_index, source_url);
     Ok(OpenedSource { metadata, body })
+}
+
+fn is_s16le_16khz_mono(content_type: &str) -> bool {
+    let mut fields = content_type
+        .split(';')
+        .map(|field| field.trim().to_ascii_lowercase());
+    if fields.next().as_deref() != Some("audio/x-raw") {
+        return false;
+    }
+
+    let fields = fields.collect::<HashSet<_>>();
+    fields.contains("format=s16le")
+        && fields.contains("rate=16000")
+        && fields.contains("channels=1")
 }
 
 fn source_metadata(audio: &TranscribeAudioStream, source_url: &str) -> Result<SourceMetadata> {
@@ -1594,6 +1611,17 @@ mod tests {
         assert_eq!(parse_device_ids("").unwrap(), Vec::<usize>::new());
         assert_eq!(parse_device_ids("0, 2").unwrap(), vec![0, 2]);
         assert!(parse_device_ids("gpu").is_err());
+    }
+
+    #[test]
+    fn recognizes_the_benchmark_pcm_format() {
+        assert!(is_s16le_16khz_mono(
+            "audio/x-raw; format=S16LE; rate=16000; channels=1"
+        ));
+        assert!(!is_s16le_16khz_mono("audio/webm"));
+        assert!(!is_s16le_16khz_mono(
+            "audio/x-raw; format=S16LE; rate=48000; channels=1"
+        ));
     }
 
     #[test]
