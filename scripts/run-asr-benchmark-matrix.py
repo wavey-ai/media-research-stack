@@ -126,7 +126,11 @@ def benchmark_command(args: argparse.Namespace) -> list[str]:
             "transcribes_audio_mastering_videos",
             "--nocapture",
         ]
-    command = ["cargo"]
+    cargo = os.environ.get("CARGO") or shutil.which("cargo")
+    if not cargo:
+        rustup_cargo = pathlib.Path.home() / ".cargo" / "bin" / "cargo"
+        cargo = str(rustup_cargo) if rustup_cargo.is_file() else "cargo"
+    command = [cargo]
     for value in args.cargo_config:
         command.extend(["--config", value])
     command.extend(
