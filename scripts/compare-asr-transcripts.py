@@ -9,9 +9,14 @@ import math
 import pathlib
 import statistics
 import sys
-import unicodedata
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+from asr_metrics import (
+    distance_ratio,
+    levenshtein_distance,
+    normalize_transcript,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,45 +71,8 @@ def read_transcript(path: pathlib.Path) -> str:
         return transcript.read()
 
 
-def normalize_transcript(text: str) -> str:
-    normalized = unicodedata.normalize("NFKC", text).casefold()
-    return " ".join(normalized.split())
-
-
-def levenshtein_distance(reference: str, candidate: str) -> int:
-    """Return exact Levenshtein distance with a bit-parallel algorithm."""
-    if len(reference) > len(candidate):
-        reference, candidate = candidate, reference
-    if not reference:
-        return len(candidate)
-
-    character_masks: dict[str, int] = {}
-    for index, character in enumerate(reference):
-        character_masks[character] = character_masks.get(character, 0) | (1 << index)
-
-    positive = ~0
-    negative = 0
-    score = len(reference)
-    final_bit = 1 << (len(reference) - 1)
-    for character in candidate:
-        matches = character_masks.get(character, 0)
-        vertical = matches | negative
-        horizontal = (((matches & positive) + positive) ^ positive) | matches
-        positive_horizontal = negative | ~(horizontal | positive)
-        negative_horizontal = positive & horizontal
-        if positive_horizontal & final_bit:
-            score += 1
-        elif negative_horizontal & final_bit:
-            score -= 1
-        positive_horizontal = (positive_horizontal << 1) | 1
-        negative_horizontal <<= 1
-        positive = negative_horizontal | ~(vertical | positive_horizontal)
-        negative = positive_horizontal & vertical
-    return score
-
-
 def ratio(distance: int, reference_length: int, candidate_length: int) -> float:
-    return distance / max(reference_length, candidate_length, 1)
+    return distance_ratio(distance, reference_length, candidate_length)
 
 
 def distribution(values: list[float]) -> dict[str, float]:
@@ -137,7 +105,6 @@ def aggregate(
             distances,
             reference_lengths,
             candidate_lengths,
-            strict=True,
         )
     ]
     denominator = sum(
@@ -145,7 +112,6 @@ def aggregate(
         for reference_length, candidate_length in zip(
             reference_lengths,
             candidate_lengths,
-            strict=True,
         )
     )
     return {

@@ -19,8 +19,8 @@ serde_json = "1.0"
 tokio = { version = "1.45", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-upload-response = { git = "https://github.com/wavey-ai/web-services.git", rev = "b7a7359668651daa481622b7d17acee372591edb", package = "upload-response" }
-web-service = { git = "https://github.com/wavey-ai/web-services.git", rev = "b7a7359668651daa481622b7d17acee372591edb", package = "web-service" }
+upload-response = { git = "https://github.com/wavey-ai/web-services.git", branch = "main", package = "av-upload-response" }
+web-service = { git = "https://github.com/wavey-ai/web-services.git", branch = "main", package = "av-web-service" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 asr-api = { git = "https://github.com/wavey-ai/asr-api.git", branch = "main", default-features = false, features = ["cohere-mlx", "audio-decoder"] }

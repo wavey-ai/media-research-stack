@@ -24,6 +24,67 @@ DEFAULT_MATRIX = (
     "3:6:1,4:4:1,4:8:1"
 )
 
+RECORDED_RUNTIME_SETTINGS = (
+    "ASR_COHERE_BACKEND",
+    "ASR_COHERE_EXECUTION_PROVIDER",
+    "ASR_COHERE_INTER_THREADS",
+    "ASR_COHERE_INTRA_THREADS",
+    "ASR_COHERE_MAX_NEW_TOKENS",
+    "ASR_COHERE_PARALLEL_EXECUTION",
+    "ASR_COHERE_CTC_TIMESTAMPS",
+    "ASR_COHERE_TIMINGS",
+    "ASR_COHERE_TIMESTAMP_BACKEND",
+    "ASR_COHERE_TRT_COMPONENTS",
+    "ASR_COHERE_TRT_FP16",
+    "ASR_COHERE_TRT_PROFILE_MAX_S",
+    "ASR_COHERE_TRT_PROFILE_MIN_S",
+    "ASR_COHERE_TRT_PROFILE_OPT_S",
+    "ASR_COHERE_TRT_WORKSPACE_BYTES",
+    "ASR_CTC_ALIGN_DEVICE_ID",
+    "ASR_CTC_ALIGN_EXECUTION_PROVIDER",
+    "ASR_CTC_ALIGN_INTER_THREADS",
+    "ASR_CTC_ALIGN_INTRA_THREADS",
+    "ASR_CTC_ALIGN_MODEL_DIR",
+    "ASR_CTC_ALIGN_OFFSET_MS",
+    "ASR_CTC_ALIGN_ONNX_FILE",
+    "ASR_CTC_ALIGN_PAD_TO",
+    "ASR_CTC_ALIGN_SESSIONS",
+    "ASR_CTC_ALIGN_TIMINGS",
+    "ASR_CTC_ALIGN_TRT_FP16",
+    "ASR_CTC_DIRECT_END_OFFSET_MS",
+    "ASR_CTC_DIRECT_MAX_UNMATCHED_WORDS",
+    "ASR_CTC_DIRECT_MIN_MATCHED_WORDS",
+    "ASR_CTC_DIRECT_MIN_MATCH_RATIO",
+    "ASR_CTC_DIRECT_START_OFFSET_MS",
+    "ASR_DEVICE_IDS",
+    "ASR_ONNX_SESSIONS",
+    "MEDIA_RESEARCH_STACK_ASR_CONCURRENCY",
+    "MEDIA_RESEARCH_STACK_CONTINUE_ON_ERROR",
+    "MEDIA_RESEARCH_STACK_MIN_TRANSCRIPT_WORDS",
+    "MEDIA_RESEARCH_STACK_STORE_TRANSCRIPTS",
+    "MEDIA_RESEARCH_STACK_WORKER_INSTANCES",
+    "UPLOAD_RESPONSE_MAX_INFLIGHT",
+    "UPLOAD_RESPONSE_NUM_STREAMS",
+    "UPLOAD_RESPONSE_RING_BYTES",
+    "UPLOAD_RESPONSE_SLOT_SIZE_KB",
+    "UPLOAD_RESPONSE_SLOTS_PER_STREAM",
+    "UPLOAD_RESPONSE_TIMEOUT_MS",
+    "UPLOAD_RESPONSE_WATCH_POLL_MS",
+    "UPLOAD_RESPONSE_WORKER_POLL_MS",
+)
+
+RECORDED_RUNTIME_DEFAULTS = {
+    "ASR_COHERE_MAX_NEW_TOKENS": "128",
+    "ASR_CTC_ALIGN_SESSIONS": "1",
+    "MEDIA_RESEARCH_STACK_CONTINUE_ON_ERROR": "false",
+    "MEDIA_RESEARCH_STACK_STORE_TRANSCRIPTS": "false",
+    "UPLOAD_RESPONSE_RING_BYTES": str(64 * 1024 * 1024),
+    "UPLOAD_RESPONSE_SLOT_SIZE_KB": "32",
+    "UPLOAD_RESPONSE_TIMEOUT_MS": str(6 * 60 * 60 * 1_000),
+    "UPLOAD_RESPONSE_WATCH_POLL_MS": "1",
+    "UPLOAD_RESPONSE_WORKER_POLL_MS": "2",
+}
+
 
 @dataclass(frozen=True)
 class Configuration:
@@ -330,9 +391,41 @@ def benchmark_metadata(args: argparse.Namespace) -> dict[str, object]:
         ),
         "minimum_transcript_words": args.minimum_transcript_words,
         "host": platform.node(),
-        "architecture": platform.machine(),
+        "architecture": native_architecture(),
+        "runner_architecture": platform.machine(),
         "operating_system": platform.platform(),
     }
+
+
+def native_architecture() -> str:
+    try:
+        result = subprocess.run(
+            ["uname", "-m"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return platform.machine()
+    return result.stdout.strip() or platform.machine()
+
+
+def effective_runtime_settings(environment: dict[str, str]) -> dict[str, str]:
+    settings = {
+        name: environment.get(name, RECORDED_RUNTIME_DEFAULTS.get(name))
+        for name in RECORDED_RUNTIME_SETTINGS
+        if name in environment or name in RECORDED_RUNTIME_DEFAULTS
+    }
+    if "ASR_COHERE_TIMESTAMP_BACKEND" not in environment:
+        legacy_ctc = bool(environment.get("ASR_CTC_ALIGN_MODEL_DIR", "").strip())
+        legacy_ctc = legacy_ctc or environment.get(
+            "ASR_COHERE_CTC_TIMESTAMPS",
+            "",
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        settings["ASR_COHERE_TIMESTAMP_BACKEND"] = (
+            "parakeet-ctc" if legacy_ctc else "token-frequency"
+        )
+    return settings
 
 
 def summarize(
@@ -343,6 +436,8 @@ def summarize(
     report_path: pathlib.Path,
     gpu_path: pathlib.Path,
     metadata: dict[str, object],
+    command: list[str],
+    environment: dict[str, str],
 ) -> dict[str, object]:
     records = read_json_lines(report_path)
     successes = [record for record in records if record.get("status") == "ok"]
@@ -369,6 +464,8 @@ def summarize(
         "asr_service_rtfx": audio_seconds / max(asr_seconds, 0.001),
         "benchmark_elapsed_seconds": final.get("run_elapsed_seconds"),
         "effective_rtfx": final.get("run_effective_rtfx"),
+        "command": command,
+        "runtime_settings": effective_runtime_settings(environment),
     }
     result.update(metadata)
     result.update(gpu_summary(gpu_path))
@@ -445,6 +542,8 @@ def main() -> int:
                 report_path,
                 gpu_path,
                 metadata,
+                command,
+                environment,
             )
             line = json.dumps(summary, separators=(",", ":"))
             summary_file.write(f"{line}\n")
