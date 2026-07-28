@@ -411,7 +411,13 @@ async fn transcribe_source(
         );
         let transcribe_started_at = Instant::now();
         let transcript = asr
-            .transcribe(audio, progress_path, index, &source_url)
+            .transcribe(
+                audio,
+                progress_path,
+                index,
+                &source_url,
+                minimum_transcript_words == 0,
+            )
             .await?;
         let transcribe_seconds = transcribe_started_at.elapsed().as_secs_f64();
         eprintln!(
@@ -538,6 +544,7 @@ impl LocalAsrHarness {
         progress_path: &Path,
         source_index: usize,
         source_url: &str,
+        allow_empty_transcript: bool,
     ) -> Result<String> {
         let content_type = audio
             .metadata
@@ -567,7 +574,7 @@ impl LocalAsrHarness {
             .handle_listen_stream(req, audio.body, Box::new(writer))
             .await
             .map_err(|error| anyhow!("streaming listen failed: {error}"))?;
-        collector.transcript()
+        collector.transcript(allow_empty_transcript)
     }
 
     async fn shutdown(&self) {
@@ -1026,7 +1033,7 @@ impl StreamWriter for ProgressStreamWriter {
 }
 
 impl ProgressCollector {
-    fn transcript(&self) -> Result<String> {
+    fn transcript(&self, allow_empty: bool) -> Result<String> {
         let state = self
             .state
             .lock()
@@ -1056,6 +1063,9 @@ impl ProgressCollector {
             .filter(|text| !text.is_empty())
         {
             return Ok(interim.to_string());
+        }
+        if allow_empty {
+            return Ok(String::new());
         }
 
         bail!(
@@ -1560,6 +1570,18 @@ mod tests {
             "channel": {"alternatives": [{"transcript": "owned recording"}]}
         });
         assert_eq!(progress_event(&event, true), event);
+    }
+
+    #[test]
+    fn retains_an_empty_successful_transcript_when_allowed() {
+        let collector = ProgressCollector {
+            state: Arc::new(Mutex::new(ProgressState {
+                status: Some(StatusCode::OK),
+                ..ProgressState::default()
+            })),
+        };
+        assert!(collector.transcript(false).is_err());
+        assert_eq!(collector.transcript(true).unwrap(), "");
     }
 
     #[test]
