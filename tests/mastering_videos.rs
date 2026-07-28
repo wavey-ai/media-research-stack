@@ -356,6 +356,7 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
         run_effective_rtfx,
         aggregate_words_per_second,
     );
+    asr.shutdown().await;
     anyhow::ensure!(
         failed == 0,
         "research sweep completed with {failed} failed source(s)"
@@ -446,7 +447,7 @@ async fn transcribe_source(
 struct LocalAsrHarness {
     ingress: ListenIngress,
     _service: Arc<UploadResponseService>,
-    handles: Vec<tokio::task::JoinHandle<()>>,
+    handles: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl LocalAsrHarness {
@@ -524,7 +525,7 @@ impl LocalAsrHarness {
         Ok(Self {
             ingress,
             _service: service,
-            handles,
+            handles: Mutex::new(handles),
         })
     }
 
@@ -564,6 +565,22 @@ impl LocalAsrHarness {
             .await
             .map_err(|error| anyhow!("streaming listen failed: {error}"))?;
         collector.transcript()
+    }
+
+    async fn shutdown(&self) {
+        let handles = {
+            let mut handles = self
+                .handles
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for handle in handles.iter() {
+                handle.abort();
+            }
+            std::mem::take(&mut *handles)
+        };
+        for handle in handles {
+            let _ = handle.await;
+        }
     }
 }
 
@@ -680,7 +697,11 @@ async fn cache_audio(
 
 impl Drop for LocalAsrHarness {
     fn drop(&mut self) {
-        for handle in &self.handles {
+        let handles = self
+            .handles
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for handle in handles {
             handle.abort();
         }
     }
