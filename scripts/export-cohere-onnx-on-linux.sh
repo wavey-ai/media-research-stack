@@ -73,6 +73,17 @@ model_is_complete() {
   for file_name in "${REQUIRED_FILES[@]}"; do
     [[ -s "$MODEL_DIR/$file_name" ]] || return 1
   done
+  jq -e '
+    (.dither | type == "number") and
+    (.feature_size | type == "number") and
+    (.n_fft | type == "number") and
+    (.n_window_size | type == "number") and
+    (.n_window_stride | type == "number") and
+    (.normalize | type == "string") and
+    (.padding_value | type == "number") and
+    (.sampling_rate | type == "number") and
+    (.window | type == "string")
+  ' "$MODEL_DIR/preprocessor_config.json" >/dev/null || return 1
   (
     cd "$MODEL_DIR"
     sha256sum --check --quiet SHA256SUMS
