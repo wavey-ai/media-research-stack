@@ -121,10 +121,22 @@ Git.
 
 ## Run a research sweep
 
-The opt-in integration runner sends each source directly from
-[`av-ingest`](https://github.com/wavey-ai/av-ingest) into
-[SoundKit](https://github.com/wavey-ai/soundkit) and ASR without an intermediate
-media file:
+Use separate cache and ASR processes for channel sweeps.
+The cache process can download multiple low-bitrate sources at the same time.
+It publishes each cache entry atomically.
+
+Run the cache process in one terminal:
+
+```bash
+MEDIA_RESEARCH_STACK_URLS_FILE=target/research/channel-manifest.json \
+MEDIA_RESEARCH_STACK_MEDIA_DIR=target/research/media \
+MEDIA_RESEARCH_STACK_CACHE_REPORT=target/research/cache-report.jsonl \
+MEDIA_RESEARCH_STACK_CACHE_CONCURRENCY=4 \
+AV_INGEST_PROXY_YTDLP_AUDIO_FORMAT='bestaudio[ext=webm][abr<=64]/bestaudio[abr<=64]/worstaudio[ext=webm]/worstaudio' \
+cargo run --locked --release --bin cache-research-media
+```
+
+Run the ASR process in another terminal:
 
 ```bash
 MEDIA_RESEARCH_STACK_BENCH=1 \
@@ -133,12 +145,21 @@ MEDIA_RESEARCH_STACK_REPORT=target/research/report.jsonl \
 MEDIA_RESEARCH_STACK_PROGRESS=target/research/progress.ndjson \
 MEDIA_RESEARCH_STACK_MEDIA_DIR=target/research/media \
 MEDIA_RESEARCH_STACK_TRANSCRIPTS_DIR=target/research/transcripts \
+MEDIA_RESEARCH_STACK_STORE_TRANSCRIPTS=1 \
 MEDIA_RESEARCH_STACK_RESUME=1 \
+MEDIA_RESEARCH_STACK_REQUIRE_CACHE=1 \
+MEDIA_RESEARCH_STACK_CACHE_WAIT_SECS=21600 \
 ASR_MODEL_DIR=../asr-api/models/cohere-transcribe-03-2026 \
 ASR_MLX_TRANSCRIBE_BIN=../asr-api/apple/.build/release/asr-mlx-transcribe \
 MACOSX_DEPLOYMENT_TARGET=14.0 \
 cargo test --locked --release --test mastering_videos -- --nocapture
 ```
+
+The ASR process reads each cache file without real-time pacing.
+It waits for atomic cache publication when the next source is not ready.
+It never downloads media when `MEDIA_RESEARCH_STACK_REQUIRE_CACHE=1`.
+Set `MEDIA_RESEARCH_STACK_CACHE_MIME_TYPE=audio/webm` in both processes.
+The cache process then replaces incompatible entries before ASR reads them.
 
 `MEDIA_RESEARCH_STACK_URLS` can be used instead of a file for a comma- or
 whitespace-separated URL list. The older `MEDIA_RESEARCH_STACK_MASTERING_*`
@@ -150,14 +171,32 @@ names remain supported as compatibility aliases.
 
 - source URL and selected resolver/format metadata
 - media and wall-clock duration
-- observed RTFx
-- transcript character and word counts.
+- total RTFx and ASR-only RTFx
+- compressed-input throughput
+- transcript character, word, and word-rate values
+- rolling ASR and pipeline throughput.
+
+`cache-report.jsonl` contains cache duration, selected format, bytes, and media
+RTFx. A high media RTFx shows that download completed faster than real time.
 
 `progress.ndjson` records response status, timestamps, and transcript sizes.
 Transcript and word text are written only when transcript storage is enabled.
+Set `MEDIA_RESEARCH_STACK_LOG_SEGMENT_METRICS=1` to print each result event.
 For public-media research, keep manifests, measurements, tags, term counts, and
 summaries as the durable artifacts. Retain full transcripts only when this is
 appropriate for your sources.
+
+Run the metrics watcher in a separate process:
+
+```sh
+python3 scripts/watch-asr-throughput.py \
+  --progress target/research/progress.ndjson \
+  --report target/research/report.jsonl \
+  --output target/research/asr-throughput.jsonl
+```
+
+The watcher records interval RTFx during each source. It also copies completed
+source and rolling run metrics. The watcher only reads ASR output files.
 
 For recordings you own or are authorized to reproduce, set
 `MEDIA_RESEARCH_STACK_STORE_TRANSCRIPTS=1` to retain full ASR events. Set
@@ -194,6 +233,8 @@ The defaults are designed for one MLX worker on a 16 GB Mac:
 | `UPLOAD_RESPONSE_MAX_INFLIGHT` | `1` | Requests processed by the MLX worker |
 | `UPLOAD_RESPONSE_TIMEOUT_MS` | `300000` | Allows for a cold MLX compile/load |
 | `ASR_COHERE_MAX_NEW_TOKENS` | `128` | Per-window generation cap, tuned for local MLX |
+| `MEDIA_RESEARCH_STACK_CACHE_CONCURRENCY` | `4` | Concurrent cache downloads |
+| `MEDIA_RESEARCH_STACK_CACHE_WAIT_SECS` | `21600` | ASR wait for the next cache entry |
 
 Increasing the ring or stream count multiplies memory across request, decoded,
 and response lanes. Add capacity only after measuring a workload. A second MLX
@@ -213,6 +254,93 @@ AV_INGEST_PROXY_YTDLP_COOKIES=/absolute/path/to/youtube-cookies.txt \
 Verify the same cookie source with one URL before a channel-sized run. The
 research sweep treats YouTube's bot-confirmation response as a systemic
 authentication failure and stops immediately instead of attempting every URL.
+
+## Compare Apple and NVIDIA throughput
+
+Use the fixed ten-source data set for architecture comparisons.
+The data set contains 4,311 seconds of WebM/Opus audio.
+
+Create the authorized GPU host:
+
+```sh
+scripts/linode-asr-benchmark-instance.sh create \
+  --token-file ../.linode-token \
+  --ssh-public-key target/linode/ssh_key.pub \
+  --type g2-gpu-rtx4000a1-m \
+  --region us-sea \
+  --label asr-mpx-rtx4000a-medium-us-sea-20260728
+```
+
+Read the host address from `target/linode/instance.json`.
+Then clone the source and copy the benchmark data:
+
+```sh
+address="$(jq -r '.ipv4[0]' target/linode/instance.json)"
+scripts/sync-asr-benchmark-assets.sh \
+  --host "root@${address}" \
+  --identity target/linode/ssh_key
+```
+
+Install the pinned NVIDIA environment:
+
+```sh
+ssh -i target/linode/ssh_key "root@${address}" \
+  'bash /opt/asr-bench/media-research-stack/scripts/bootstrap-ubuntu-nvidia-asr.sh --reboot'
+```
+
+Wait for the host to restart.
+Then export the Cohere model on the host:
+
+```sh
+scripts/run-remote-cohere-export.sh \
+  --host "root@${address}" \
+  --identity target/linode/ssh_key \
+  --token-file ../.hf_token
+```
+
+Run one CUDA configuration before the TensorRT matrix:
+
+```sh
+ssh -i target/linode/ssh_key "root@${address}" \
+  'cd /opt/asr-bench/media-research-stack &&
+   ~/.cargo/bin/cargo test --locked --release --test mastering_videos --no-run &&
+   python3 scripts/run-asr-benchmark-matrix.py \
+     --execution-provider cuda \
+     --matrix 1:1:1 \
+     --model-dir /opt/asr-bench/models/cohere-transcribe-03-2026 \
+     --runtime-lib /opt/asr-bench/runtime/onnxruntime-linux-x64-gpu-1.23.2/lib/libonnxruntime.so \
+     --results-dir target/audiomovers/benchmark-10/runs-remote'
+```
+
+Run the default TensorRT matrix:
+
+```sh
+ssh -i target/linode/ssh_key "root@${address}" \
+  'cd /opt/asr-bench/media-research-stack &&
+   python3 scripts/run-asr-benchmark-matrix.py \
+     --execution-provider tensorrt \
+     --model-dir /opt/asr-bench/models/cohere-transcribe-03-2026 \
+     --runtime-lib /opt/asr-bench/runtime/onnxruntime-linux-x64-gpu-1.23.2/lib/libonnxruntime.so \
+     --results-dir target/audiomovers/benchmark-10/runs-remote'
+```
+
+Run the matching Apple MLX baseline:
+
+```sh
+scripts/run-local-asr-baseline.sh
+```
+
+Copy the remote summary files before host deletion.
+Use `scripts/compare-asr-benchmarks.py` to select the best stable configuration.
+Select by effective RTFx, not ASR service RTFx.
+
+Delete the host after you retrieve all summaries:
+
+```sh
+scripts/linode-asr-benchmark-instance.sh delete \
+  --token-file ../.linode-token \
+  --confirm-delete
+```
 
 ## Development checks
 

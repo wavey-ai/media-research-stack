@@ -11,20 +11,24 @@ build = "build.rs"
 
 [dependencies]
 anyhow = "1"
-asr-api = { git = "https://github.com/wavey-ai/asr-api.git", rev = "006f9edf9bfdc88a3e6045b9389dd68b6d77ccfb", default-features = false, features = ["cohere-mlx", "audio-decoder"] }
-av-ingest-proxy = { git = "https://github.com/wavey-ai/av-ingest.git", rev = "7f7f25614b47b8ccbdb7cfde0c3cdb0ca16f08ff", package = "av-ingest-proxy" }
+av-ingest-proxy = { git = "https://github.com/wavey-ai/av-ingest.git", branch = "main", package = "av-ingest-proxy" }
 clap = { version = "4.5", features = ["derive", "env"] }
+futures-util = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 tokio = { version = "1.45", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-serde_json = "1.0"
 upload-response = { git = "https://github.com/wavey-ai/web-services.git", rev = "b7a7359668651daa481622b7d17acee372591edb", package = "upload-response" }
 web-service = { git = "https://github.com/wavey-ai/web-services.git", rev = "b7a7359668651daa481622b7d17acee372591edb", package = "web-service" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+asr-api = { git = "https://github.com/wavey-ai/asr-api.git", branch = "main", default-features = false, features = ["cohere-mlx", "audio-decoder"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+asr-api = { git = "https://github.com/wavey-ai/asr-api.git", branch = "main", default-features = false, features = ["cohere-backend", "audio-decoder"] }
 
 [dev-dependencies]
 async-trait = "0.1"
 bytes = "1"
-futures-util = "0.3"
 http = "1"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"

@@ -9,7 +9,10 @@ use av_ingest_proxy::{TranscribeAudioResolver, TranscribeAudioStream};
 use bytes::Bytes;
 use futures_util::{future, stream, StreamExt};
 use http::{header::CONTENT_TYPE, Request, Response, StatusCode};
-use serde::{Deserialize, Serialize};
+use media_research_stack::research_cache::{
+    ensure_cached_source, open_cached_source, source_file_stem, source_urls_from_file,
+    SourceMetadata,
+};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::env;
@@ -34,21 +37,34 @@ const DEFAULT_UPLOAD_RESPONSE_SLOT_SIZE_KB: usize = 32;
 const DEFAULT_UPLOAD_RESPONSE_RING_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_UPLOAD_RESPONSE_NUM_STREAMS: usize = 2;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct SourceMetadata {
-    source_url: String,
-    duration_seconds: u64,
-    content_length: Option<u64>,
-    content_type: Option<String>,
-    source_mime_type: Option<String>,
-    resolver: String,
-    itag: Option<u64>,
-    cached: bool,
-}
-
 struct OpenedSource {
     metadata: SourceMetadata,
     body: BodyStream,
+}
+
+#[derive(Clone, Debug)]
+struct BenchmarkSettings {
+    backend: String,
+    device_ids: Vec<usize>,
+    onnx_sessions: usize,
+    asr_concurrency: usize,
+    worker_instances: usize,
+}
+
+struct SourceSuccess {
+    metadata: SourceMetadata,
+    audio_seconds: f64,
+    transcript: String,
+    transcript_words: usize,
+    transcript_path: Option<PathBuf>,
+    transcribe_seconds: f64,
+}
+
+struct SourceAttempt {
+    index: usize,
+    source_url: String,
+    wall_seconds: f64,
+    result: Result<SourceSuccess>,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -61,9 +77,12 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
         return Ok(());
     }
 
-    env::set_var("ASR_COHERE_BACKEND", "mlx");
+    set_default_asr_backend();
     env::set_var("AV_INGEST_PROXY_RESOLVE_MODE", "transcribe");
-    ensure_mlx_runtime_env()?;
+    let settings = benchmark_settings()?;
+    if settings.backend == "mlx" {
+        ensure_mlx_runtime_env()?;
+    }
     init_tracing();
 
     let model_dir = PathBuf::from(env::var("ASR_MODEL_DIR").context("ASR_MODEL_DIR is required")?);
@@ -85,8 +104,16 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
         "benchmark setup: loading ASR stack from {}",
         model_dir.display()
     );
+    eprintln!(
+        "benchmark setup: backend={}, device_ids={:?}, ONNX sessions={}, request concurrency={}, worker instances={}",
+        settings.backend,
+        settings.device_ids,
+        settings.onnx_sessions,
+        settings.asr_concurrency,
+        settings.worker_instances,
+    );
     let asr_started_at = Instant::now();
-    let asr = LocalAsrHarness::new(model_dir)?;
+    let asr = Arc::new(LocalAsrHarness::new(model_dir, &settings)?);
     eprintln!(
         "benchmark setup: ASR stack ready in {:.2}s",
         asr_started_at.elapsed().as_secs_f64()
@@ -101,6 +128,15 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
     let progress_path = progress_path()?;
     let transcripts_dir = transcripts_dir()?;
     let media_dir = media_dir()?;
+    let require_cached = env_flag("MEDIA_RESEARCH_STACK_REQUIRE_CACHE");
+    let cache_wait = Duration::from_secs(env_u64(
+        "MEDIA_RESEARCH_STACK_CACHE_WAIT_SECS",
+        if require_cached { 6 * 60 * 60 } else { 0 },
+    )?);
+    anyhow::ensure!(
+        !require_cached || media_dir.is_some(),
+        "MEDIA_RESEARCH_STACK_REQUIRE_CACHE requires MEDIA_RESEARCH_STACK_MEDIA_DIR"
+    );
     let resume = env_flag("MEDIA_RESEARCH_STACK_RESUME");
     let continue_on_error = env_flag("MEDIA_RESEARCH_STACK_CONTINUE_ON_ERROR");
     let completed_sources = if resume {
@@ -114,7 +150,15 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
         eprintln!("writing completed transcripts to {}", path.display());
     }
     if let Some(path) = &media_dir {
-        eprintln!("caching compressed source audio in {}", path.display());
+        if require_cached {
+            eprintln!(
+                "reading cache-only audio from {} with a {}s wait",
+                path.display(),
+                cache_wait.as_secs()
+            );
+        } else {
+            eprintln!("caching compressed source audio in {}", path.display());
+        }
     }
 
     let mut completed = 0usize;
@@ -122,7 +166,9 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
     let mut failed = 0usize;
     let mut aggregate_audio_seconds = 0.0f64;
     let mut aggregate_wall_seconds = 0.0f64;
-
+    let mut aggregate_asr_seconds = 0.0f64;
+    let mut aggregate_transcript_words = 0usize;
+    let mut pending_sources = Vec::new();
     for (index, source_url) in urls.iter().enumerate() {
         if completed_sources.contains(source_url) {
             skipped += 1;
@@ -134,103 +180,133 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
             );
             continue;
         }
-        let started_at = Instant::now();
-        let source_result = async {
-            eprintln!(
-                "[{}/{}] opening source {}",
-                index + 1,
-                urls.len(),
-                source_url
-            );
-            let audio =
-                open_research_audio(&resolver, media_dir.as_deref(), index, source_url).await?;
-            let metadata = audio.metadata.clone();
-            let audio_seconds = metadata.duration_seconds as f64;
-            eprintln!(
-                "[{}/{}] opened {}s source via {} itag {:?} bytes {:?} cached={}",
-                index + 1,
-                urls.len(),
-                audio_seconds,
-                metadata.resolver,
-                metadata.itag,
-                metadata.content_length,
-                metadata.cached,
-            );
-            let transcribe_started_at = Instant::now();
-            let transcript = asr
-                .transcribe(audio, &progress_path, index, source_url)
-                .await?;
-            eprintln!(
-                "[{}/{}] ASR stream returned in {:.2}s",
-                index + 1,
-                urls.len(),
-                transcribe_started_at.elapsed().as_secs_f64()
-            );
-            let transcript_words = transcript.split_whitespace().count();
-            anyhow::ensure!(
-                transcript_words >= 5,
-                "short transcript for {source_url}: {transcript_words} words"
-            );
-            let transcript_path = transcripts_dir
-                .as_deref()
-                .map(|directory| write_transcript(directory, index, source_url, &transcript))
-                .transpose()?;
-            Ok::<_, anyhow::Error>((
-                metadata,
-                audio_seconds,
-                transcript,
-                transcript_words,
-                transcript_path,
-            ))
+        pending_sources.push((index, source_url.clone()));
+    }
+
+    let run_started_at = Instant::now();
+    let total_sources = urls.len();
+    let attempts = stream::iter(pending_sources.into_iter().map(|(index, source_url)| {
+        let asr = Arc::clone(&asr);
+        let resolver = &resolver;
+        let media_dir = media_dir.clone();
+        let progress_path = progress_path.clone();
+        let transcripts_dir = transcripts_dir.clone();
+        async move {
+            transcribe_source(
+                asr.as_ref(),
+                resolver,
+                media_dir.as_deref(),
+                &progress_path,
+                transcripts_dir.as_deref(),
+                index,
+                source_url,
+                total_sources,
+                require_cached,
+                cache_wait,
+            )
+            .await
         }
-        .await;
-        let (metadata, audio_seconds, transcript, transcript_words, transcript_path) =
-            match source_result {
-                Ok(result) => result,
-                Err(error) if continue_on_error => {
-                    failed += 1;
-                    let wall_seconds = started_at.elapsed().as_secs_f64();
-                    let error_message = format!("{error:#}");
-                    append_json_line(
-                        &report_path,
-                        &json!({
-                            "status": "error",
-                            "index": index,
-                            "source_url": source_url,
-                            "wall_seconds": wall_seconds,
-                            "error": error_message,
-                        }),
-                    )?;
-                    if is_systemic_youtube_auth_error(&error_message) {
-                        bail!(
+    }))
+    .buffer_unordered(settings.asr_concurrency);
+    tokio::pin!(attempts);
+
+    while let Some(attempt) = attempts.next().await {
+        let SourceAttempt {
+            index,
+            source_url,
+            wall_seconds,
+            result,
+        } = attempt;
+        let SourceSuccess {
+            metadata,
+            audio_seconds,
+            transcript,
+            transcript_words,
+            transcript_path,
+            transcribe_seconds,
+            ..
+        } = match result {
+            Ok(result) => result,
+            Err(error) if continue_on_error => {
+                failed += 1;
+                let error_message = format!("{error:#}");
+                append_json_line(
+                    &report_path,
+                    &json!({
+                        "status": "error",
+                        "index": index,
+                        "source_url": source_url,
+                        "wall_seconds": wall_seconds,
+                        "asr_backend": settings.backend,
+                        "device_ids": settings.device_ids,
+                        "onnx_sessions": settings.onnx_sessions,
+                        "asr_concurrency": settings.asr_concurrency,
+                        "worker_instances": settings.worker_instances,
+                        "error": error_message,
+                    }),
+                )?;
+                if is_systemic_youtube_auth_error(&error_message) {
+                    bail!(
                             "YouTube rejected the audio-download session; stopping the sweep instead of retrying every source. Set AV_INGEST_PROXY_YTDLP_COOKIES to a readable Netscape cookies file or AV_INGEST_PROXY_YTDLP_COOKIES_FROM_BROWSER to a logged-in browser, verify one URL with yt-dlp, and resume the existing report. Original error: {error_message}"
                         );
-                    }
-                    eprintln!(
-                        "[{}/{}] source failed after {:.1}s; continuing: {:#}",
-                        index + 1,
-                        urls.len(),
-                        wall_seconds,
-                        error
-                    );
-                    continue;
                 }
-                Err(error) => return Err(error),
-            };
-        let wall_seconds = started_at.elapsed().as_secs_f64();
+                eprintln!(
+                    "[{}/{}] source failed after {:.1}s; continuing: {:#}",
+                    index + 1,
+                    urls.len(),
+                    wall_seconds,
+                    error
+                );
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         let rtfx = audio_seconds / wall_seconds.max(0.001);
+        let asr_rtfx = audio_seconds / transcribe_seconds.max(0.001);
+        let asr_input_mib_per_second = metadata
+            .content_length
+            .map(|bytes| bytes as f64 / (1024.0 * 1024.0) / transcribe_seconds.max(0.001));
+        let asr_transcript_words_per_second =
+            transcript_words as f64 / transcribe_seconds.max(0.001);
 
         completed += 1;
         aggregate_audio_seconds += audio_seconds;
         aggregate_wall_seconds += wall_seconds;
+        aggregate_asr_seconds += transcribe_seconds;
+        aggregate_transcript_words += transcript_words;
+        let run_asr_rtfx = aggregate_audio_seconds / aggregate_asr_seconds.max(0.001);
+        let run_pipeline_rtfx = aggregate_audio_seconds / aggregate_wall_seconds.max(0.001);
+        let run_transcript_words_per_second =
+            aggregate_transcript_words as f64 / aggregate_asr_seconds.max(0.001);
+        let run_elapsed_seconds = run_started_at.elapsed().as_secs_f64();
+        let run_effective_rtfx = aggregate_audio_seconds / run_elapsed_seconds.max(0.001);
 
         let record = json!({
             "status": "ok",
+            "metrics_schema": 2,
             "index": index,
             "source_url": source_url,
+            "asr_backend": settings.backend,
+            "device_ids": settings.device_ids,
+            "onnx_sessions": settings.onnx_sessions,
+            "asr_concurrency": settings.asr_concurrency,
+            "worker_instances": settings.worker_instances,
             "audio_seconds": audio_seconds,
             "wall_seconds": wall_seconds,
             "rtfx": rtfx,
+            "asr_wall_seconds": transcribe_seconds,
+            "asr_rtfx": asr_rtfx,
+            "asr_input_mib_per_second": asr_input_mib_per_second,
+            "asr_transcript_words_per_second": asr_transcript_words_per_second,
+            "run_processed_sources": completed,
+            "run_audio_seconds": aggregate_audio_seconds,
+            "run_asr_wall_seconds": aggregate_asr_seconds,
+            "run_asr_rtfx": run_asr_rtfx,
+            "run_pipeline_wall_seconds": aggregate_wall_seconds,
+            "run_pipeline_rtfx": run_pipeline_rtfx,
+            "run_elapsed_seconds": run_elapsed_seconds,
+            "run_effective_rtfx": run_effective_rtfx,
+            "run_transcript_words_per_second": run_transcript_words_per_second,
             "content_length": metadata.content_length,
             "content_type": metadata.content_type,
             "source_mime_type": metadata.source_mime_type,
@@ -245,27 +321,126 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
         append_json_line(&report_path, &record)?;
 
         eprintln!(
-            "[{}/{}] {:.1}s audio in {:.1}s wall = {:.2} RTFx :: {}",
+            "[{}/{}] {:.1}s audio: ASR {:.1}s = {:.2}x; pipeline {:.1}s = {:.2}x; {:.1} transcript words/s :: {}",
             completed,
             urls.len(),
             audio_seconds,
+            transcribe_seconds,
+            asr_rtfx,
             wall_seconds,
             rtfx,
+            asr_transcript_words_per_second,
             source_url
+        );
+        eprintln!(
+            "run throughput: {} source(s), {:.1}s audio, ASR service {:.2}x, effective {:.2}x",
+            completed, aggregate_audio_seconds, run_asr_rtfx, run_effective_rtfx
         );
     }
 
     assert_eq!(completed + skipped + failed, urls.len());
-    let aggregate_rtfx = aggregate_audio_seconds / aggregate_wall_seconds.max(0.001);
+    let aggregate_asr_rtfx = aggregate_audio_seconds / aggregate_asr_seconds.max(0.001);
+    let aggregate_words_per_second =
+        aggregate_transcript_words as f64 / aggregate_asr_seconds.max(0.001);
+    let run_elapsed_seconds = run_started_at.elapsed().as_secs_f64();
+    let run_effective_rtfx = aggregate_audio_seconds / run_elapsed_seconds.max(0.001);
     eprintln!(
-        "research benchmark complete: {} processed, {} resumed, {} failed, {:.1}s audio in {:.1}s wall = {:.2} aggregate RTFx",
-        completed, skipped, failed, aggregate_audio_seconds, aggregate_wall_seconds, aggregate_rtfx
+        "research benchmark complete: {} processed, {} resumed, {} failed, {:.1}s audio; ASR service {:.1}s = {:.2}x; elapsed {:.1}s = {:.2}x effective; {:.1} transcript words/s",
+        completed,
+        skipped,
+        failed,
+        aggregate_audio_seconds,
+        aggregate_asr_seconds,
+        aggregate_asr_rtfx,
+        run_elapsed_seconds,
+        run_effective_rtfx,
+        aggregate_words_per_second,
     );
     anyhow::ensure!(
         failed == 0,
         "research sweep completed with {failed} failed source(s)"
     );
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn transcribe_source(
+    asr: &LocalAsrHarness,
+    resolver: &TranscribeAudioResolver,
+    media_dir: Option<&Path>,
+    progress_path: &Path,
+    transcripts_dir: Option<&Path>,
+    index: usize,
+    source_url: String,
+    total_sources: usize,
+    require_cached: bool,
+    cache_wait: Duration,
+) -> SourceAttempt {
+    let started_at = Instant::now();
+    let result = async {
+        eprintln!(
+            "[{}/{}] opening source {}",
+            index + 1,
+            total_sources,
+            source_url
+        );
+        let audio = open_research_audio(
+            resolver,
+            media_dir,
+            index,
+            &source_url,
+            require_cached,
+            cache_wait,
+        )
+        .await?;
+        let metadata = audio.metadata.clone();
+        let audio_seconds = metadata.duration_seconds as f64;
+        eprintln!(
+            "[{}/{}] opened {}s source via {} itag {:?} bytes {:?} cached={}",
+            index + 1,
+            total_sources,
+            audio_seconds,
+            metadata.resolver,
+            metadata.itag,
+            metadata.content_length,
+            metadata.cached,
+        );
+        let transcribe_started_at = Instant::now();
+        let transcript = asr
+            .transcribe(audio, progress_path, index, &source_url)
+            .await?;
+        let transcribe_seconds = transcribe_started_at.elapsed().as_secs_f64();
+        eprintln!(
+            "[{}/{}] ASR stream returned in {:.2}s",
+            index + 1,
+            total_sources,
+            transcribe_seconds
+        );
+        let transcript_words = transcript.split_whitespace().count();
+        anyhow::ensure!(
+            transcript_words >= 5,
+            "short transcript for {source_url}: {transcript_words} words"
+        );
+        let transcript_path = transcripts_dir
+            .map(|directory| write_transcript(directory, index, &source_url, &transcript))
+            .transpose()?;
+        Ok(SourceSuccess {
+            metadata,
+            audio_seconds,
+            transcript,
+            transcript_words,
+            transcript_path,
+            transcribe_seconds,
+        })
+    }
+    .await;
+    let wall_seconds = started_at.elapsed().as_secs_f64();
+    SourceAttempt {
+        index,
+        source_url,
+        wall_seconds,
+        result,
+    }
 }
 
 struct LocalAsrHarness {
@@ -275,15 +450,28 @@ struct LocalAsrHarness {
 }
 
 impl LocalAsrHarness {
-    fn new(model_dir: PathBuf) -> Result<Self> {
+    fn new(model_dir: PathBuf, settings: &BenchmarkSettings) -> Result<Self> {
         let started_at = Instant::now();
         eprintln!("ASR harness: building configs");
-        let ingress_config = asr_config(AppRole::Ingress, "media-research-ingress", None)?;
-        let decoder_config = asr_config(AppRole::Decoder, "media-research-decoder", None)?;
-        let worker_config =
-            asr_config(AppRole::Worker, "media-research-worker-0", Some(model_dir))?;
+        let ingress_config =
+            asr_config(AppRole::Ingress, "media-research-ingress", None, settings)?;
+        let decoder_config =
+            asr_config(AppRole::Decoder, "media-research-decoder", None, settings)?;
+        let worker_configs = (0..settings.worker_instances)
+            .map(|index| {
+                asr_config(
+                    AppRole::Worker,
+                    &format!("media-research-worker-{index}"),
+                    Some(model_dir.clone()),
+                    settings,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         ingress_config.validate()?;
+        for config in &worker_configs {
+            config.validate()?;
+        }
         eprintln!(
             "ASR harness: configs ready in {:.2}s",
             started_at.elapsed().as_secs_f64()
@@ -305,6 +493,9 @@ impl LocalAsrHarness {
 
         let backend_started_at = Instant::now();
         eprintln!("ASR harness: constructing ASR backend");
+        let worker_config = worker_configs
+            .first()
+            .context("ASR harness requires one worker configuration")?;
         let backend = Arc::new(AsrBackend::new(
             worker_config.model_dir()?,
             worker_config.resolved_model_provider()?,
@@ -318,18 +509,25 @@ impl LocalAsrHarness {
         );
 
         let worker_started_at = Instant::now();
-        let worker =
-            Arc::new(WorkerState::new(worker_config, backend)).spawn_cache_worker(service.clone());
+        let workers = worker_configs
+            .into_iter()
+            .map(|config| {
+                Arc::new(WorkerState::new(config, Arc::clone(&backend)))
+                    .spawn_cache_worker(service.clone())
+            })
+            .collect::<Vec<_>>();
         let ingress = ListenIngress::new(ingress_config, service.clone());
         eprintln!(
             "ASR harness: worker/ingress ready in {:.2}s",
             worker_started_at.elapsed().as_secs_f64()
         );
 
+        let mut handles = vec![watcher, decoder];
+        handles.extend(workers);
         Ok(Self {
             ingress,
             _service: service,
-            handles: vec![watcher, decoder, worker],
+            handles,
         })
     }
 
@@ -377,10 +575,15 @@ async fn open_research_audio(
     media_dir: Option<&Path>,
     source_index: usize,
     source_url: &str,
+    require_cached: bool,
+    cache_wait: Duration,
 ) -> Result<OpenedSource> {
     if let Some(directory) = media_dir {
         if let Some(source) = open_cached_audio(directory, source_index, source_url).await? {
             return Ok(source);
+        }
+        if require_cached {
+            return wait_for_cached_audio(directory, source_index, source_url, cache_wait).await;
         }
         return cache_audio(resolver, directory, source_index, source_url).await;
     }
@@ -412,40 +615,45 @@ async fn open_cached_audio(
     source_index: usize,
     source_url: &str,
 ) -> Result<Option<OpenedSource>> {
-    let stem = source_file_stem(source_index, source_url);
-    let media_path = directory.join(format!("{stem}.audio"));
-    let metadata_path = directory.join(format!("{stem}.json"));
-    let metadata_bytes = match fs::read(&metadata_path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    let mut metadata: SourceMetadata =
-        serde_json::from_slice(&metadata_bytes).with_context(|| {
-            format!(
-                "failed to parse cached metadata {}",
-                metadata_path.display()
-            )
-        })?;
-    if metadata.source_url != source_url {
+    let Some(source) = open_cached_source(directory, source_index, source_url)? else {
         return Ok(None);
-    }
-    let file_size = match fs::metadata(&media_path) {
-        Ok(value) => value.len(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
     };
-    if file_size == 0
-        || metadata
-            .content_length
-            .is_some_and(|length| length != file_size)
-    {
-        return Ok(None);
+    let body = body_stream_from_file(&source.media_path, source_index, source_url).await?;
+    Ok(Some(OpenedSource {
+        metadata: source.metadata,
+        body,
+    }))
+}
+
+async fn wait_for_cached_audio(
+    directory: &Path,
+    source_index: usize,
+    source_url: &str,
+    timeout: Duration,
+) -> Result<OpenedSource> {
+    let started_at = Instant::now();
+    eprintln!(
+        "[{}] waiting up to {}s for the cache process",
+        source_index + 1,
+        timeout.as_secs()
+    );
+    loop {
+        if let Some(source) = open_cached_audio(directory, source_index, source_url).await? {
+            eprintln!(
+                "[{}] cache became ready after {:.2}s",
+                source_index + 1,
+                started_at.elapsed().as_secs_f64()
+            );
+            return Ok(source);
+        }
+        anyhow::ensure!(
+            started_at.elapsed() < timeout,
+            "cache process did not publish source {} within {}s",
+            source_url,
+            timeout.as_secs()
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    metadata.content_length = Some(file_size);
-    metadata.cached = true;
-    let body = body_stream_from_file(&media_path, source_index, source_url).await?;
-    Ok(Some(OpenedSource { metadata, body }))
 }
 
 async fn cache_audio(
@@ -454,54 +662,22 @@ async fn cache_audio(
     source_index: usize,
     source_url: &str,
 ) -> Result<OpenedSource> {
-    let stem = source_file_stem(source_index, source_url);
-    let media_path = directory.join(format!("{stem}.audio"));
-    let partial_media_path = directory.join(format!("{stem}.audio.download"));
-    let metadata_path = directory.join(format!("{stem}.json"));
-    let partial_metadata_path = directory.join(format!("{stem}.json.part"));
-    let _ = fs::remove_file(&partial_media_path);
-    let _ = fs::remove_file(&partial_metadata_path);
-
     eprintln!(
         "[{}] downloading compressed source audio with av-ingest",
         source_index + 1
     );
-    let downloaded = resolver
-        .download_youtube_audio(source_url, &partial_media_path)
-        .await
-        .with_context(|| format!("failed to cache {source_url}"))?;
-    let metadata = SourceMetadata {
-        source_url: source_url.to_string(),
-        duration_seconds: downloaded
-            .duration_seconds
-            .with_context(|| format!("av-ingest did not return duration for {source_url}"))?,
-        content_length: Some(downloaded.content_length),
-        content_type: downloaded.mime_type.clone(),
-        source_mime_type: downloaded.mime_type,
-        resolver: downloaded.resolver,
-        itag: downloaded.itag,
-        cached: true,
-    };
-    fs::rename(&partial_media_path, &media_path)
-        .with_context(|| format!("failed to publish cached audio {}", media_path.display()))?;
-
+    let outcome = ensure_cached_source(resolver, directory, source_index, source_url).await?;
+    let media_rtfx = outcome.media_rtfx();
+    let source = outcome.source;
+    let metadata = source.metadata;
     eprintln!(
-        "[{}] cached {} compressed bytes from {}",
+        "[{}] cached {} compressed bytes at {:.1}x real time from {}",
         source_index + 1,
-        downloaded.content_length,
+        metadata.content_length.unwrap_or(0),
+        media_rtfx,
         source_url
     );
-    fs::write(
-        &partial_metadata_path,
-        serde_json::to_vec_pretty(&metadata)?,
-    )?;
-    fs::rename(&partial_metadata_path, &metadata_path).with_context(|| {
-        format!(
-            "failed to publish cache metadata {}",
-            metadata_path.display()
-        )
-    })?;
-    let body = body_stream_from_file(&media_path, source_index, source_url).await?;
+    let body = body_stream_from_file(&source.media_path, source_index, source_url).await?;
     Ok(OpenedSource { metadata, body })
 }
 
@@ -609,6 +785,7 @@ struct ProgressStreamWriter {
     status: Option<StatusCode>,
     store_transcripts: bool,
     log_transcript_previews: bool,
+    log_segment_metrics: bool,
 }
 
 #[derive(Default)]
@@ -644,6 +821,7 @@ impl ProgressStreamWriter {
                 "MEDIA_RESEARCH_STACK_LOG_TRANSCRIPT_PREVIEWS",
                 "MEDIA_RESEARCH_STACK_LOG_TRANSCRIPTS",
             ]),
+            log_segment_metrics: env_flag("MEDIA_RESEARCH_STACK_LOG_SEGMENT_METRICS"),
         })
     }
 
@@ -750,7 +928,7 @@ impl ProgressStreamWriter {
                         duration,
                         transcript_preview(transcript)
                     );
-                } else {
+                } else if self.log_segment_metrics {
                     eprintln!(
                         "[{}] ASR {label} {:.1}-{:.1}s: {} chars, {} words",
                         self.source_index + 1,
@@ -938,7 +1116,7 @@ fn header_u64(audio: &TranscribeAudioStream, name: &str) -> Option<u64> {
 
 fn research_urls() -> Result<Vec<String>> {
     let urls = if let Some(path) = first_env(&["MEDIA_RESEARCH_STACK_URLS_FILE"]) {
-        urls_from_file(Path::new(&path))?
+        source_urls_from_file(Path::new(&path))?
     } else if let Some(value) = first_env(&[
         "MEDIA_RESEARCH_STACK_URLS",
         "MEDIA_RESEARCH_STACK_MASTERING_URLS",
@@ -956,38 +1134,6 @@ fn research_urls() -> Result<Vec<String>> {
         "research run requires at least one source URL"
     );
     Ok(urls)
-}
-
-fn urls_from_file(path: &Path) -> Result<Vec<String>> {
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read source URL file {}", path.display()))?;
-    let trimmed = contents.trim();
-    if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        let value: Value = serde_json::from_str(trimmed)
-            .with_context(|| format!("failed to parse source URL file {}", path.display()))?;
-        let entries = value
-            .get("videos")
-            .and_then(Value::as_array)
-            .or_else(|| value.as_array())
-            .ok_or_else(|| anyhow!("JSON URL file must be an array or contain a videos array"))?;
-        return entries
-            .iter()
-            .map(|entry| {
-                entry
-                    .as_str()
-                    .or_else(|| entry.get("url").and_then(Value::as_str))
-                    .map(ToOwned::to_owned)
-                    .ok_or_else(|| anyhow!("JSON URL entry must be a string or contain a url"))
-            })
-            .collect();
-    }
-
-    Ok(contents
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .flat_map(split_urls)
-        .collect())
 }
 
 fn split_urls(value: &str) -> Vec<String> {
@@ -1047,27 +1193,6 @@ fn media_dir() -> Result<Option<PathBuf>> {
     fs::create_dir_all(&path)
         .with_context(|| format!("failed to create media cache directory {}", path.display()))?;
     Ok(Some(path))
-}
-
-fn source_file_stem(source_index: usize, source_url: &str) -> String {
-    let source_id = source_url
-        .split_once("v=")
-        .map(|(_, value)| value)
-        .unwrap_or(source_url)
-        .split(['&', '?', '#', '/'])
-        .find(|value| !value.is_empty())
-        .unwrap_or("source");
-    let source_id = source_id
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    format!("{:04}-{source_id}", source_index + 1)
 }
 
 fn write_transcript(
@@ -1166,6 +1291,60 @@ fn env_u64(name: &str, default: u64) -> Result<u64> {
         .map(|value| value.unwrap_or(default))
 }
 
+fn set_default_asr_backend() {
+    if first_env(&["ASR_COHERE_BACKEND"]).is_none() {
+        env::set_var(
+            "ASR_COHERE_BACKEND",
+            if cfg!(target_os = "macos") {
+                "mlx"
+            } else {
+                "onnx"
+            },
+        );
+    }
+}
+
+fn benchmark_settings() -> Result<BenchmarkSettings> {
+    let backend = env::var("ASR_COHERE_BACKEND")
+        .unwrap_or_else(|_| {
+            if cfg!(target_os = "macos") {
+                "mlx".to_string()
+            } else {
+                "onnx".to_string()
+            }
+        })
+        .trim()
+        .to_ascii_lowercase();
+    let asr_concurrency = positive_env_usize("MEDIA_RESEARCH_STACK_ASR_CONCURRENCY", 1)?;
+    let worker_instances = positive_env_usize("MEDIA_RESEARCH_STACK_WORKER_INSTANCES", 1)?;
+    let onnx_sessions = positive_env_usize("ASR_ONNX_SESSIONS", 1)?;
+    let device_ids = parse_device_ids(
+        first_env(&["ASR_DEVICE_IDS"])
+            .as_deref()
+            .unwrap_or(if backend == "mlx" { "" } else { "0" }),
+    )?;
+    Ok(BenchmarkSettings {
+        backend,
+        device_ids,
+        onnx_sessions,
+        asr_concurrency,
+        worker_instances,
+    })
+}
+
+fn parse_device_ids(value: &str) -> Result<Vec<usize>> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .with_context(|| format!("invalid ASR_DEVICE_IDS entry {value:?}"))
+        })
+        .collect()
+}
+
 fn ensure_mlx_runtime_env() -> Result<()> {
     let runtime = if let Some(path) = first_env(&["ASR_MLX_TRANSCRIBE_BIN"]) {
         PathBuf::from(path)
@@ -1205,7 +1384,12 @@ fn ensure_mlx_runtime_env() -> Result<()> {
     Ok(())
 }
 
-fn asr_config(role: AppRole, worker_id: &str, model_dir: Option<PathBuf>) -> Result<AppConfig> {
+fn asr_config(
+    role: AppRole,
+    worker_id: &str,
+    model_dir: Option<PathBuf>,
+    settings: &BenchmarkSettings,
+) -> Result<AppConfig> {
     let upload_response_slot_size_kb = env_usize(
         "UPLOAD_RESPONSE_SLOT_SIZE_KB",
         DEFAULT_UPLOAD_RESPONSE_SLOT_SIZE_KB,
@@ -1231,8 +1415,8 @@ fn asr_config(role: AppRole, worker_id: &str, model_dir: Option<PathBuf>) -> Res
         tls_key_path: None,
         model_dir,
         model_provider: AsrModelProvider::Cohere,
-        device_ids: Vec::new(),
-        onnx_sessions: 1,
+        device_ids: settings.device_ids.clone(),
+        onnx_sessions: settings.onnx_sessions,
         cohere_max_new_tokens: first_env(&[
             "ASR_COHERE_MAX_NEW_TOKENS",
             "MEDIA_RESEARCH_STACK_MASTERING_MAX_NEW_TOKENS",
@@ -1245,7 +1429,7 @@ fn asr_config(role: AppRole, worker_id: &str, model_dir: Option<PathBuf>) -> Res
         utt_split_seconds: 0.8,
         upload_response_num_streams: env_usize(
             "UPLOAD_RESPONSE_NUM_STREAMS",
-            DEFAULT_UPLOAD_RESPONSE_NUM_STREAMS,
+            DEFAULT_UPLOAD_RESPONSE_NUM_STREAMS.max(settings.asr_concurrency),
         )?,
         upload_response_slot_size_kb,
         upload_response_slots_per_stream,
@@ -1262,7 +1446,10 @@ fn asr_config(role: AppRole, worker_id: &str, model_dir: Option<PathBuf>) -> Res
         .unwrap_or(6 * 60 * 60 * 1_000),
         upload_response_watch_poll_ms: 1,
         upload_response_worker_poll_ms: 2,
-        upload_response_max_inflight: env_usize("UPLOAD_RESPONSE_MAX_INFLIGHT", 1)?,
+        upload_response_max_inflight: env_usize(
+            "UPLOAD_RESPONSE_MAX_INFLIGHT",
+            settings.asr_concurrency,
+        )?,
         upload_response_worker_id: worker_id.to_string(),
         upload_response_ingress_urls: Vec::new(),
         upload_response_discovery_dns: None,
@@ -1292,6 +1479,12 @@ fn env_optional_usize(name: &str) -> Result<Option<usize>> {
 
 fn env_usize(name: &str, default: usize) -> Result<usize> {
     env_optional_usize(name).map(|value| value.unwrap_or(default))
+}
+
+fn positive_env_usize(name: &str, default: usize) -> Result<usize> {
+    let value = env_usize(name, default)?;
+    anyhow::ensure!(value > 0, "{name} must be greater than 0");
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -1349,6 +1542,13 @@ mod tests {
     #[test]
     fn ring_size_rounds_up_to_whole_slots() {
         assert_eq!(slots_for_ring_bytes(65_537, 32_768), 3);
+    }
+
+    #[test]
+    fn parses_empty_and_multiple_device_ids() {
+        assert_eq!(parse_device_ids("").unwrap(), Vec::<usize>::new());
+        assert_eq!(parse_device_ids("0, 2").unwrap(), vec![0, 2]);
+        assert!(parse_device_ids("gpu").is_err());
     }
 
     #[test]
