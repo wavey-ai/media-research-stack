@@ -9,6 +9,7 @@ import json
 import os
 import pathlib
 import platform
+import resource
 import shutil
 import signal
 import subprocess
@@ -362,6 +363,7 @@ def summarize(
 
 
 def main() -> int:
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     args = parse_args()
     try:
         configurations = parse_matrix(args.matrix)
