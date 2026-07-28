@@ -21,7 +21,7 @@ from typing import TextIO
 
 DEFAULT_MATRIX = (
     "1:1:1,1:2:1,2:2:1,2:4:1,3:3:1,"
-    "3:6:1,4:4:1,4:8:1,4:8:2,4:8:4"
+    "3:6:1,4:4:1,4:8:1"
 )
 
 
@@ -42,7 +42,7 @@ class Configuration:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the cached ASR benchmark for each session, request, and worker setting."
+            "Run the cached ASR benchmark for each session and request setting."
         )
     )
     parser.add_argument(
@@ -98,6 +98,15 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help="Pass one --config value to cargo. Repeat this option as necessary.",
+    )
+    parser.add_argument(
+        "--minimum-transcript-words",
+        type=int,
+        default=5,
+        help=(
+            "Reject shorter transcripts. Use zero to retain silent and "
+            "mostly-music sources."
+        ),
     )
     return parser.parse_args()
 
@@ -175,6 +184,9 @@ def run_environment(
             "MEDIA_RESEARCH_STACK_STARTUP_GRACE_SECS": "0",
             "MEDIA_RESEARCH_STACK_ASR_CONCURRENCY": str(configuration.concurrency),
             "MEDIA_RESEARCH_STACK_WORKER_INSTANCES": str(configuration.workers),
+            "MEDIA_RESEARCH_STACK_MIN_TRANSCRIPT_WORDS": str(
+                args.minimum_transcript_words
+            ),
             "ASR_MODEL_DIR": str(args.model_dir.resolve()),
             "ASR_MODEL_PROVIDER": "cohere",
             "ASR_COHERE_BACKEND": (
@@ -316,6 +328,7 @@ def benchmark_metadata(args: argparse.Namespace) -> dict[str, object]:
         "dataset_manifest_audio_seconds": selection.get(
             "total_duration_seconds"
         ),
+        "minimum_transcript_words": args.minimum_transcript_words,
         "host": platform.node(),
         "architecture": platform.machine(),
         "operating_system": platform.platform(),
@@ -365,6 +378,9 @@ def summarize(
 def main() -> int:
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     args = parse_args()
+    if args.minimum_transcript_words < 0:
+        print("--minimum-transcript-words cannot be negative", file=sys.stderr)
+        return 2
     try:
         configurations = parse_matrix(args.matrix)
     except (ValueError, TypeError) as error:

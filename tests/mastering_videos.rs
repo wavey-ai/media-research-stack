@@ -49,6 +49,7 @@ struct BenchmarkSettings {
     onnx_sessions: usize,
     asr_concurrency: usize,
     worker_instances: usize,
+    minimum_transcript_words: usize,
 }
 
 struct SourceSuccess {
@@ -203,6 +204,7 @@ async fn transcribes_audio_mastering_videos() -> Result<()> {
                 total_sources,
                 require_cached,
                 cache_wait,
+                settings.minimum_transcript_words,
             )
             .await
         }
@@ -376,6 +378,7 @@ async fn transcribe_source(
     total_sources: usize,
     require_cached: bool,
     cache_wait: Duration,
+    minimum_transcript_words: usize,
 ) -> SourceAttempt {
     let started_at = Instant::now();
     let result = async {
@@ -419,8 +422,8 @@ async fn transcribe_source(
         );
         let transcript_words = transcript.split_whitespace().count();
         anyhow::ensure!(
-            transcript_words >= 5,
-            "short transcript for {source_url}: {transcript_words} words"
+            transcript_words >= minimum_transcript_words,
+            "short transcript for {source_url}: {transcript_words} words; minimum is {minimum_transcript_words}"
         );
         let transcript_path = transcripts_dir
             .map(|directory| write_transcript(directory, index, &source_url, &transcript))
@@ -1336,6 +1339,7 @@ fn benchmark_settings() -> Result<BenchmarkSettings> {
     let asr_concurrency = positive_env_usize("MEDIA_RESEARCH_STACK_ASR_CONCURRENCY", 1)?;
     let worker_instances = positive_env_usize("MEDIA_RESEARCH_STACK_WORKER_INSTANCES", 1)?;
     let onnx_sessions = positive_env_usize("ASR_ONNX_SESSIONS", 1)?;
+    let minimum_transcript_words = env_usize("MEDIA_RESEARCH_STACK_MIN_TRANSCRIPT_WORDS", 5)?;
     let device_ids = parse_device_ids(
         first_env(&["ASR_DEVICE_IDS"])
             .as_deref()
@@ -1347,6 +1351,7 @@ fn benchmark_settings() -> Result<BenchmarkSettings> {
         onnx_sessions,
         asr_concurrency,
         worker_instances,
+        minimum_transcript_words,
     })
 }
 
