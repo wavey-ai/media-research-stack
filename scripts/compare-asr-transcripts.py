@@ -29,6 +29,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", type=pathlib.Path, required=True)
     parser.add_argument("--reference-dir", type=pathlib.Path, required=True)
     parser.add_argument("--candidate-dir", type=pathlib.Path, required=True)
+    parser.add_argument("--reference-validation", type=pathlib.Path)
+    parser.add_argument("--candidate-validation", type=pathlib.Path)
     parser.add_argument("--reference-label", default="reference")
     parser.add_argument("--candidate-label", default="candidate")
     parser.add_argument("--output", type=pathlib.Path, required=True)
@@ -69,6 +71,37 @@ def transcript_path(directory: pathlib.Path, index: int, url: str) -> pathlib.Pa
 def read_transcript(path: pathlib.Path) -> str:
     with path.open("r", encoding="utf-8", newline="") as transcript:
         return transcript.read()
+
+
+def validated_source_indexes(
+    path: pathlib.Path,
+    videos: list[dict[str, Any]],
+) -> set[int]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    sources = value.get("sources") if isinstance(value, dict) else None
+    if not isinstance(sources, list):
+        raise ValueError(f"{path} does not contain a validation sources array")
+    indexes: set[int] = set()
+    seen: set[int] = set()
+    for source in sources:
+        if not isinstance(source, dict):
+            raise ValueError(f"{path} contains an invalid validation source")
+        index = source.get("index")
+        issues = source.get("issues")
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or not 0 <= index < len(videos)
+            or not isinstance(issues, list)
+            or index in seen
+        ):
+            raise ValueError(f"{path} contains invalid validation source data")
+        seen.add(index)
+        if not issues:
+            indexes.add(index)
+    if seen != set(range(len(videos))):
+        raise ValueError(f"{path} does not cover the complete manifest")
+    return indexes
 
 
 def ratio(distance: int, reference_length: int, candidate_length: int) -> float:
@@ -126,9 +159,28 @@ def aggregate(
 
 def compare(args: argparse.Namespace) -> dict[str, Any]:
     videos = load_videos(args.manifest)
+    included_indexes = set(range(len(videos)))
+    validation_selection = {}
+    for label, path in (
+        ("reference", args.reference_validation),
+        ("candidate", args.candidate_validation),
+    ):
+        if path is None:
+            continue
+        valid_indexes = validated_source_indexes(path, videos)
+        included_indexes &= valid_indexes
+        validation_selection[label] = {
+            "path": str(path),
+            "valid_source_count": len(valid_indexes),
+        }
+    if not included_indexes:
+        raise ValueError("the validation intersection has no complete sources")
+
     missing: list[str] = []
     sources = []
     for index, video in enumerate(videos):
+        if index not in included_indexes:
+            continue
         url = video["url"]
         reference_path = transcript_path(args.reference_dir, index, url)
         candidate_path = transcript_path(args.candidate_dir, index, url)
@@ -189,7 +241,10 @@ def compare(args: argparse.Namespace) -> dict[str, Any]:
         "normalization": (
             "NFKC, Unicode case folding, and whitespace collapse; punctuation kept"
         ),
+        "manifest_source_count": len(videos),
         "source_count": len(sources),
+        "excluded_source_count": len(videos) - len(sources),
+        "validation_selection": validation_selection,
         "raw": aggregate(
             sources,
             "raw_edit_distance",
