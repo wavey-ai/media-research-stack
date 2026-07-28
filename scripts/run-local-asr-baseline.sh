@@ -27,6 +27,4 @@ exec python3 scripts/run-asr-benchmark-matrix.py \
   --model-dir "$MODEL_DIR" \
   --mlx-runtime "$MLX_RUNTIME" \
   --dataset-dir "$DATASET_DIR" \
-  --results-dir "$RESULTS_DIR" \
-  --cargo-config 'patch."https://github.com/wavey-ai/av-ingest.git".av-ingest-proxy.path="../av-ingest/crates/proxy"' \
-  --cargo-config 'patch."https://github.com/wavey-ai/asr-api.git".asr-api.path="../asr-api"'
+  --results-dir "$RESULTS_DIR"

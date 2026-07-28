@@ -376,6 +376,7 @@ def main() -> int:
         f"summary-{args.execution_provider}-{int(time.time())}.jsonl"
     )
     command = benchmark_command(args)
+    successful_configurations = 0
 
     with summary_path.open("w", encoding="utf-8") as summary_file:
         for configuration in configurations:
@@ -427,8 +428,18 @@ def main() -> int:
             summary_file.write(f"{line}\n")
             summary_file.flush()
             print(line, flush=True)
+            if (
+                summary["exit_code"] == 0
+                and summary["completed_sources"]
+                == metadata["dataset_manifest_sources"]
+                and summary["failed_sources"] == 0
+            ):
+                successful_configurations += 1
 
     print(f"wrote {summary_path}", flush=True)
+    if successful_configurations == 0:
+        print("the matrix did not contain a stable complete run", file=sys.stderr)
+        return 1
     return 0
 
 
