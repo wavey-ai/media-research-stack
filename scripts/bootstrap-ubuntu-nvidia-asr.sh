@@ -70,6 +70,7 @@ apt-get install -y \
   libffi-dev \
   libopencore-amrnb-dev \
   libssl-dev \
+  libvpx-dev \
   linux-headers-"$(uname -r)" \
   pkg-config \
   python3-dev \
