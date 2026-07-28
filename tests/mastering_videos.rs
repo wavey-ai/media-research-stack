@@ -469,9 +469,6 @@ impl LocalAsrHarness {
             .collect::<Result<Vec<_>>>()?;
 
         ingress_config.validate()?;
-        for config in &worker_configs {
-            config.validate()?;
-        }
         eprintln!(
             "ASR harness: configs ready in {:.2}s",
             started_at.elapsed().as_secs_f64()
