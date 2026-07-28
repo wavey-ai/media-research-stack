@@ -29,6 +29,7 @@ class BenchmarkMetadataTests(unittest.TestCase):
             settings["ASR_COHERE_TIMESTAMP_BACKEND"],
             "token-frequency",
         )
+        self.assertEqual(settings["ASR_COHERE_MAX_NEW_TOKENS"], "384")
         self.assertEqual(settings["UPLOAD_RESPONSE_TIMEOUT_MS"], "21600000")
         self.assertEqual(settings["UPLOAD_RESPONSE_WORKER_POLL_MS"], "2")
 

@@ -1472,7 +1472,7 @@ fn asr_config(
             "MEDIA_RESEARCH_STACK_MASTERING_MAX_NEW_TOKENS",
         ])
         .and_then(|value| value.parse().ok())
-        .unwrap_or(128),
+        .unwrap_or(384),
         chunk_seconds: 30.0,
         overlap_seconds: 2.0,
         final_min_seconds: 0.5,
