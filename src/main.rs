@@ -231,7 +231,7 @@ fn ensure_mlx_metallib(runtime: &Path) -> Result<()> {
         .find(|path| path.is_file())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "MLX Metal library was not found. Rebuild the runtime with `swift build -c release --package-path ../asr-api/apple`."
+                "MLX Metal library was not found. Build it with `../asr-api/apple/build.sh`."
             )
         })?;
     fs::copy(&source, &destination).with_context(|| {
@@ -270,7 +270,7 @@ fn resolve_mlx_transcribe_bin(config: &Config) -> Result<PathBuf> {
     }
 
     anyhow::bail!(
-        "Cohere MLX runtime was not found. Build it with `swift build -c release --package-path ../asr-api/apple`, then set ASR_MLX_TRANSCRIBE_BIN to the resulting asr-mlx-transcribe binary."
+        "Cohere MLX runtime was not found. Build it with `../asr-api/apple/build.sh`, then set ASR_MLX_TRANSCRIBE_BIN to the resulting asr-mlx-transcribe binary."
     )
 }
 

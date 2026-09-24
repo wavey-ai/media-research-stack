@@ -61,17 +61,17 @@ and contain:
 - `tokenizer.model`
 - `vocab.json`
 
-The Rust dependencies are pinned in `Cargo.lock`. Build the MLX executable from
-the current [`asr-api`](https://github.com/wavey-ai/asr-api) checkout:
+The Rust dependencies are pinned in `Cargo.lock`. Build the MLX executable and
+Metal library from the current [`asr-api`](https://github.com/wavey-ai/asr-api) checkout:
 
 ```bash
-swift build -c release --package-path ../asr-api/apple
+../asr-api/apple/build.sh
 ```
 
 The runner automatically finds a sibling checkout at
 `../asr-api/apple/.build/release/asr-mlx-transcribe`. For another layout, set
-`ASR_MLX_TRANSCRIBE_BIN` explicitly. It also verifies that `mlx.metallib` is
-beside the executable and installs the copy produced by SwiftPM when needed.
+`ASR_MLX_TRANSCRIBE_BIN` explicitly. The runner requires `mlx.metallib` beside
+the executable. The build script compiles the library when SwiftPM leaves it out.
 
 ## Start the stack
 
